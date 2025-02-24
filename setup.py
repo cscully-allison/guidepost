@@ -21,7 +21,7 @@ setup(
     description='Guidepost. An overview visualization for understanding supercomputer queue data.',
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/cscullyallison/guidepost",
+    url="https://github.com/cscully-allison/guidepost",
     packages=find_packages(),
     install_requires=[
         'numpy',

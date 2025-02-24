@@ -25,10 +25,11 @@ pip install guidepost
 
 ## Quick Start
 
-### 1. Import Guidepost
+### 1. Import and Initialize Guidepost
 
 ```python
-import guidepost as gp
+from guidepost import Guidepost
+gp = Guidepost()
 ```
 
 ### 2. Load Your Data
@@ -37,16 +38,33 @@ Guidepost supports input data in CSV or Pandas DataFrame format. Ensure your dat
 ```python
 import pandas as pd
 
-data = pd.read_csv("hpc_jobs.csv")
+jobs_data = pd.read_parquet("data/jobs_data.parquet")
 ```
 
-### 3. Generate Visualization
+### 3. Configure Visualization
 
 ```python
-gp.load_visualization(data)
+gp.vis_data = jobs_data
+gp.vis_configs = {
+        'x': 'queue_wait',
+        'y': 'start_time',
+        'color': 'nodes_req',
+        'color_agg': 'avg',
+        'categorical': 'user'
+}
 ```
 
-Run the above command in a Jupyter notebook cell to render the visualization directly.
+### 4. Run Visualization
+```python
+gp
+```
+
+Run the above command in a Jupyter notebook cell to load data.
+
+### 4. Retrieve Selections from Visualization
+```python
+gp.retrieve_selected_data()
+```
 
 ---
 
@@ -58,16 +76,33 @@ Below is an example of the kind of data Guidepost works with:
 | 12345  | 5.2             | 10         | short | Complete |
 | 12346  | 12.0            | 20         | long  | Running  |
 
-Note that a column named "parition" must be sepecified.
+
+Note that a column named "partition" must be sepecified.
 
 ---
 
 ## API Reference
 
-### `load_visualization(data)`
-- **Description**: Renders the HPC job data visualization in the current Jupyter notebook.
-- **Parameters**:
-  - `data` (DataFrame or str): A Pandas DataFrame or a path to a CSV file containing HPC job data.
+### `vis_data`
+- **Description**: Holds the vis data to passed to the visualization. Updates to this variable will automatically update the visualization.
+
+
+### `vis_configs`
+- **Description**: Holds the vis configurations to passed to the visualization. Updates to this variable will automatically update the visualization.
+
+Vis configurations must be specified as a python dictonary with the following fields:
+- 'x': The column from the pandas dataframe which will be shown on the x axis. This can be a integer, float or datetime variable.
+- 'y': The column from the pandas dataframe which will be shown on the y axis of this visualization. This can be an integer or float.
+- 'color': The column from the pandas dataframe which will determine the color of squares in the main summary view. This can be an integer or float.
+- 'color_agg': This is a specification for what aggregation is used for the color variable. It can be: 'avg', 'variance', 'std', 'sum', or 'median'
+- 'categorical': A categorical variable from the dataset. It must be a string. The visualization will show the top 7 instances of this variable. 
+
+
+
+### `retrieve_selected_data()`
+- **Description**: Returns selected data back from the visualization. 
+- **Returns**:
+  - `subselection` (DataFrame or str): A Pandas DataFrame that contains subselected data specified from selections made to the visualization.
 
 ---
 
@@ -89,11 +124,11 @@ Guidepost is licensed under the MIT License. See the `LICENSE` file for details.
 
 ## Acknowledgments
 
-Guidepost was developed to simplify the analysis of HPC workloads, inspired by the challenges faced by HPC administrators and researchers. Thank you to the open-source community for their support and tools.
+Guidepost was developed under the auspices and with funding provided by the National Renewable Energy Laboratory (NREL).
 
 ---
 
 ## Contact
 
-For questions or feedback, please reach out to the maintainers at [your-email@example.com].
+For questions or feedback, please reach out to the maintainer at [cscullyallison@sci.utah.edu].
 
