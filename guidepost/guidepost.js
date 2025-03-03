@@ -6,7 +6,7 @@ const FACET_LAYOUT = {
 
 const OVERVIEW_LAYOUT = {
     width: 1100,
-    height: 200,
+    height: 300,
     outer_margin: 10,
     inner_padding: 30
 }
@@ -50,11 +50,14 @@ const X_VARIABLE_OFFSET = LEGEND_LAYOUT.width;
 const Y_VARIABLE_OFFSET = 0;
 
 const num_rows = 50;
-const num_cols = 100;
+const num_cols = 150;
 
 // COLORS
 const BLUE = 'rgba(32, 61, 192, 0.7)';
 const RICH_BLUE = 'rgb(32, 61, 192)';
+
+const TAN = 'rgb(237, 203, 176)';
+const RICH_TAN = 'rgb(202, 172, 150)';
 
 let draw_width = OVERVIEW_LAYOUT.width-2*OVERVIEW_LAYOUT.inner_padding;
 let draw_height = OVERVIEW_LAYOUT.height - 2*OVERVIEW_LAYOUT.inner_padding;
@@ -67,7 +70,7 @@ let zoom_factor_v = 10;
 class JSModel{
     constructor(data, var_specifications, anywidget_model){
         this.data = this.list_major(data);
-        this.data = this.facet(this.data, "partition");
+        this.data = this.facet(this.data, var_specifications['facet_by']);
         this.facets = Object.keys(this.data);
         this.vars = var_specifications;
         this.anywidget_model = anywidget_model;
@@ -253,12 +256,28 @@ class JSModel{
             sum_stats.q1 = d3.quantile(keyArray, 0.25);
             sum_stats.q2 = d3.quantile(keyArray, 0.50);
             sum_stats.q3 = d3.quantile(keyArray, 0.75);
+
+            //aliases
+
+            sum_stats.median = sum_stats.q2;
+            sum_stats.med = sum_stats.median;
+            sum_stats.var = sum_stats.variance;
+            sum_stats.average = sum_stats.avg;
+            sum_stats.mean = sum_stats.avg;
         }
         else{
             sum_stats.sum = 0;
             sum_stats.avg = 0;
+            sum_stats.average = 0;
+            sum_stats.mean = 0;
             sum_stats.std = 0;
+            sum_stats.variance = 0;
+            sum_stats.var = 0;
+            sum_stats.std = 0;
+            sum_stats.median = 0;
+            sum_stats.med = 0;
         }
+
     
         return sum_stats;
     }
@@ -658,7 +677,7 @@ class JSModel{
      */
     update_data(data){
         this.data = this.list_major(data);
-        this.data = this.facet(this.data, "partition");
+        this.data = this.facet(this.data, this.var_specifications['facet_by']);
         this.facets = Object.keys(data);
     }
 
@@ -925,7 +944,7 @@ class Heatmap{
 
         
         view.append('text')
-            .text(`Queue: ${this.facet}`)
+            .text(`Group: ${this.facet}`)
             .attr('baseline', 'bottom')
             .attr('anchor', 'middle')
             .attr('x', (draw_width)/2)
@@ -960,7 +979,7 @@ class Heatmap{
         //fill row if only y axis is brushed
         if(self.model.brushed_ranges[self.facet].y_range.length != 0 
             && self.model.brushed_ranges[self.facet].x_range.length == 0){
-            if(parseInt(row_num) > self.model.brushed_ranges[self.facet].y_range[1] 
+            if(parseInt(row_num) >= self.model.brushed_ranges[self.facet].y_range[1] 
                 && parseInt(row_num) < self.model.brushed_ranges[self.facet].y_range[0]){
                 return self.highlighted_scale_color(col_data.bins[row_num][self.model.vars.color_agg]);
             }
@@ -981,7 +1000,7 @@ class Heatmap{
 
         else if(self.model.brushed_ranges[self.facet].y_range.length != 0 
             && self.model.brushed_ranges[self.facet].x_range.length != 0){
-            if(parseInt(row_num) > self.model.brushed_ranges[self.facet].y_range[1] 
+            if(parseInt(row_num) >= self.model.brushed_ranges[self.facet].y_range[1] 
                 && parseInt(row_num) < self.model.brushed_ranges[self.facet].y_range[0]
                 && test_threshold >= self.model.brushed_ranges[self.facet].x_range[0] 
                 && test_threshold < self.model.brushed_ranges[self.facet].x_range[1]){
@@ -1467,7 +1486,7 @@ class Histogram{
                                     let base_width = (draw_width / self.model.faceted_bins[self.facet].column.length);
                                     return base_width;
                                 })
-                                .attr('fill', BLUE)
+                                .attr('fill', TAN)
                                 .attr(`transform`, (d)=>{return `translate(${0}, ${(HISTOGRAM_LAYOUT.height- self.scale_y(d.column_values.length))-2*HISTOGRAM_LAYOUT.inner_padding})`});
                         },
                         function(update){
@@ -1492,7 +1511,7 @@ class Histogram{
                             .attr('class', 'bar')
                             .attr('width', (d)=>{return self.scale_x(d)})
                             .attr('height', (d)=>{return draw_height / self.model.faceted_bins[self.facet].column[0].bins.length})
-                            .attr('fill', BLUE);
+                            .attr('fill', TAN);
                         
                         return enter;
                     },
@@ -1519,7 +1538,7 @@ class CategoricalBarChart{
         this.width = width;
         this.orientation = orientation;
         this.id_token = `${facet}_${orientation}_histogram`;
-        this.n = 7;
+        this.n = 10;
         this.view = null;
         
         this.scale_y = null;
@@ -1563,7 +1582,12 @@ class CategoricalBarChart{
                     .attr('transform', 'rotate(35)');
 
             h_hist.append('text')
-                    .text(`Top ${this.n} ${this.model.vars.categorical}`)
+                    .text(()=>{
+                        if(this.model.categorical_bins[this.facet].length > this.n){
+                            return `Top ${this.n} ${this.model.vars.categorical}`;
+                        } 
+                        return this.model.vars.categorical;
+                    })
                     .attr('text-anchor', 'middle')
                     .attr('transform', `translate(${this.width/2},${this.height+CAT_HISTOGRAM_LAYOUT.bottom_title_margin})`);
             
@@ -1595,6 +1619,7 @@ class CategoricalBarChart{
      * Sets up the scales for the categorical histogram based on the current data.
      */
     setup_scales(){
+        this.n = Math.min(this.model.categorical_bins[this.facet].length, this.n);
         let top_n_cats = this.model.categorical_bins[this.facet].slice(0,this.n);
 
         if(this.orientation == 'bottom'){
@@ -1662,16 +1687,16 @@ class CategoricalBarChart{
                                 .attr('height', (d)=>{return self.scale_y(d.val)})
                                 // .attr('width', (d)=>{return ((HISTOGRAM_LAYOUT.width - 2*HISTOGRAM_LAYOUT.inner_padding) / faceted_bins[d.facet].x.length)})
                                 .attr('width', (self.width-2*CAT_HISTOGRAM_LAYOUT.inner_padding)/self.n)
-                                .attr('fill', BLUE)
+                                .attr('fill', TAN)
                                 .attr(`transform`, (d)=>{return `translate(${0}, ${(CAT_HISTOGRAM_LAYOUT.height- self.scale_y(d.val))-2*CAT_HISTOGRAM_LAYOUT.inner_padding})`})
                                 .on('mouseover', function (e,d){
-                                    d3.select(this).attr('fill', RICH_BLUE);
+                                    d3.select(this).attr('fill', RICH_TAN);
                                     self.model.filter_data_by_category([d.key], self.facet, self.id_token, update_targets);
                                     // self.model.update_row_counts(self.token, `${self.facet}_right_histogram`, self.facet, []);
                                 })
                                 .on('mouseout', function (e,d){
                                     if(!self.model.is_category_pinned(self.facet, d.key)){
-                                        d3.select(this).attr('fill', BLUE);
+                                        d3.select(this).attr('fill', TAN);
                                     }
 
                                 })
@@ -1790,7 +1815,7 @@ class Legend {
         
         axis.append('g')
             .attr('class', 'right-axis')
-            .call(d3.axisLeft().scale(this.ticks_scale).tickValues(ticks))  
+            .call(d3.axisLeft().scale(this.ticks_scale).tickValues(ticks).tickFormat(d3.format(".2s")))  
             .attr('transform', `translate(${LEGEND_LAYOUT.width-LEGEND_LAYOUT.right_padding},${0})`);
 
 
@@ -1822,78 +1847,170 @@ class Legend {
 
 }
 
-/**
- * Ensures that all values in var_specs are in the keys of data.
- * @param {Object} var_specs - The variable specifications.
- * @param {Object} data - The data object.
- * @returns {Array} - An array of missing keys and their associated values.
- */
-function validate_var_specs(var_specs, data) {
-    let missing = [];
-    for (let key in var_specs) {
-        if (key !== 'color_agg' && !data.hasOwnProperty(var_specs[key])) {
-            missing.push({ key: key, value: var_specs[key] });
-        }
+class Validator{
+
+    constructor(svg, data, var_specs){
+        this.svg = svg;
+        this.data = data;
+        this.var_specs = var_specs;
+    
     }
-    return missing;
-}
 
-
-/**
- * Checks if a string is a valid date.
- * @param {string} dateString - The string to check.
- * @returns {boolean} - True if the string is a valid date, false otherwise.
- */
-function isValidDate(dateString) {
-    const date = new Date(dateString);
-    return !isNaN(date.getTime());
-}
-
-
-/**
- * Ensures that all values in var_specs are logically appropriate
- * @param {Object} var_specs - The variable specifications.
- * @param {Object} data - The data object.
- * @returns {Array} - An array of missing keys and their associated values.
- */
-function validate_variable_semantics(var_specs, data) {
-    let incorrect = [];
-    let valid_aggs = ['avg', 'variance', 'std', 'q2', 'sum']
-
-    for (let key in var_specs) {
-        if(key === 'color_agg'){
-            if(!valid_aggs.includes(var_specs['color_agg'])){
-                incorrect.push({key:key, value: var_specs[key], message: 'Invalid aggregation specified. Acceptable aggregations are: "avg", "variance", "std", "q2", "sum"'});
+    /**
+     * Ensures that all values in var_specs are in the keys of data.
+     * @param {Object} var_specs - The variable specifications.
+     * @param {Object} data - The data object.
+     * @returns {Array} - An array of missing keys and their associated values.
+     */
+    validate_var_specs() {
+        let missing = [];
+        for (let key in this.var_specs) {
+            if (key !== 'color_agg' && !this.data.hasOwnProperty(this.var_specs[key])) {
+                missing.push({ key: key, value: this.var_specs[key], message: `Configuration Error: "${key}": The variable "${this.var_specs[key]}" is missing from the data. Please verify that the variable name exists in the dataset columns or is spelled correctly.` });
             }
         }
-        else if (key === 'x') {
-            if (typeof data[var_specs[key]] !== 'number'){
-                if(typeof data[var_specs[key]] == 'string'){
-                    if(!isValidDate(data[var_specs[key]])){
-                        incorrect.push({ key: key, value: var_specs[key], message: 'The x-axis only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
-                    }
+        return missing;
+    }
+
+
+    /**
+     * Checks if a string is a valid date.
+     * @param {string} dateString - The string to check.
+     * @returns {boolean} - True if the string is a valid date, false otherwise.
+     */
+    isValidDate(dateString) {
+        const date = new Date(dateString);
+        return !isNaN(date.getTime());
+    }
+
+
+    render_errors(errors){
+        this.svg.selectAll("*").remove();
+        
+        let err_view = this.svg.append('text')
+            .text('Errors were found in the visualization specification. See below for more details or check the console output.')
+            .attr('transform', `translate(${20}, ${20})`);
+
+        let err_list = this.svg.append('g')
+            .attr('transform', `translate(${30}, ${40})`);
+
+        err_list.append('rect')
+            .attr('height', 20*errors.length)
+            .attr('width', 1300)
+            .attr('fill', 'rgba(240,240,240)')
+            .attr('stroke', 'black');
+        
+        for(let error of errors){
+            err_list.append('text')
+                .text(`· ${error.message}`)
+                .attr('transform', `translate(${10}, ${15 + 20*errors.indexOf(error)})`);
+        }
+
+        this.svg.attr('height', 20*errors.length + 40)
+            .attr('width', 1340);
+    }
+
+    validate(){
+        let errors = [];
+
+        errors = this.validate_config_fields();
+        errors = errors.concat(this.validate_var_specs());
+
+        if(errors.length <= 0){
+            errors = this.validate_variable_semantics();
+        }
+
+        if(errors.length > 0){
+            this.render_errors(errors);
+            return false;
+        }
+
+        return true;
+    }
+
+    validate_config_fields(){
+        //ensure that all keys in var_specs are in the set of required keys x, y, color, categorical, facet_by, and color_agg
+        let required_keys = ['x', 'y', 'color', 'categorical'];
+        let missing = [];
+        for (let key of required_keys) {
+            if (!this.var_specs.hasOwnProperty(key)) {
+                missing.push({ key: key, value: '', message: `Configuration Error: "${key}": This key is required for the visualization configuration. Please specify this key and a column name as the value for this configuration.` });
+            }
+        }
+
+
+        //attempt to resolve a missing facet_by
+        if(!this.var_specs.hasOwnProperty('facet_by')){
+            if (this.data.hasOwnProperty('partition')) {
+                this.var_specs['facet_by'] = 'partition';
+            } else if (this.data.hasOwnProperty('queue')) {
+                this.var_specs['facet_by'] = 'queue';
+            } else {
+                missing.push({ key: 'facet_by', value: '', message: `Configuration Error: No column was selected to partition the data into and no "queue" or "partition" column was found in the dataset. 
+                    Please specify the "facet_by" configuration and a categorical column on your data.` });
+            }
+        }
+
+        //set color_agg to average by default
+        if(!this.var_specs.hasOwnProperty('color_agg')){
+            this.var_specs.color_agg = 'avg';
+        }
+
+
+        return missing;
+    }
+
+    /**
+     * Ensures that all values in this.var_specs are logically appropriate
+     * @param {Object} this.var_specs - The variable specifications.
+     * @param {Object} this.data - The data object.
+     * @returns {Array} - An array of missing keys and their associated values.
+     */
+    validate_variable_semantics() {
+        let incorrect = [];
+        let valid_aggs = ['avg', 'variance', 'std', 'median', 'sum']
+
+        for (let key in this.var_specs) {
+            if(key === 'color_agg'){
+                if(!valid_aggs.includes(this.var_specs['color_agg'])){
+                    incorrect.push({key:key, value: this.var_specs[key], message: 'Invalid aggregation specified. Acceptable aggregations are: "avg", "variance", "std", "median", "sum"'});
                 }
+            }
+            else if (key === 'x') {
+                let test_val = this.data[this.var_specs[key]][Object.keys(this.data[this.var_specs[key]])[0]];
+                if (typeof test_val !== 'number'){
+                    if(typeof test_val == 'string'){
+                        if(!isValidDate(test_val)){
+                            incorrect.push({ key: key, value: this.var_specs[key], message: 'The x-axis only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
+                        }
+                    }
 
-                incorrect.push({ key: key, value: var_specs[key], message: 'The x-axis only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
+                    incorrect.push({ key: key, value: this.var_specs[key], message: 'The x-axis only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
+                }
+            }
+            else if (key === 'y') {
+                let test_val = this.data[this.var_specs[key]][Object.keys(this.data[this.var_specs[key]])[0]];
+                if (typeof test_val !== 'number'){
+                        incorrect.push({ key: key, value: this.var_specs[key], message: 'The y-axis only supports floats and integers. Please specify a different variable.' });
+                }
+            }
+            else if (key === 'color') {
+                let test_val = this.data[this.var_specs[key]][Object.keys(this.data[this.var_specs[key]])[0]];
+                if (typeof test_val !== 'number'){
+                    incorrect.push({ key: key, value: this.var_specs[key], message: 'The color variable only supports floats and integers. Please specify a different column on your dataset or verify the datatype of this column.' });
+                }
+            }
+            else if (key === 'categorical'){
+                let test_val = this.data[this.var_specs[key]][Object.keys(this.data[this.var_specs[key]])[0]];
+                if(typeof test_val !== 'string'){
+                    incorrect.push({ key: key, value: this.var_specs[key], message: 'The categorical view only supports categorical variables formatted as strings. Please specify a different column on your dataset or reformat an exisitng column.' });
+                }
             }
         }
-        else if (key === 'y') {
-            if (typeof data[var_specs[key]] !== 'number'){
-                    incorrect.push({ key: key, value: var_specs[key], message: 'The y-axis only supports floats and integers. Please specify a different variable.' });
-            }
-        }
-        else if (key === 'color') {
-            if (typeof data[var_specs[key]] !== 'number'){
-                incorrect.push({ key: key, value: var_specs[key], message: 'The color variable only supports floats and integers. Please specify a different column on your dataset or verify the datatype of this column.' });
-            }
-        }
-        else if (key === 'categorical'){
-            if(typeof data[var_specs[key]] !== 'string'){
-                incorrect.push({ key: key, value: var_specs[key], message: 'The categorical view only supports categorical variables formatted as strings. Please specify a different column on your dataset or reformat an exisitng column.' });
-            }
-        }
+        return incorrect;
     }
-    return incorrect;
+
+
 }
 
 function create_views(model, svg){
@@ -1933,14 +2050,11 @@ function create_views(model, svg){
 
 }
 
+
+
 function render({model, el}){
     let data = model.get("vis_data");
     let var_specs = model.get("vis_configs");
-
-    console.log("INPUT DATA", data);
-    console.log("VALIDATE", validate_var_specs(var_specs, data));
-
-
 
     model.set("selected_records", "");
     model.save_changes();
@@ -1948,12 +2062,16 @@ function render({model, el}){
     let svg = d3.select(el).append('svg').attr('width', 500).attr('height', 50);
     let first_text = null;
 
+    let validator = new Validator(svg, data, var_specs);
+    let is_valid = validator.validate();
 
     if(Object.keys(data).length == 0){
         first_text = svg.append('text').text('No data detected. Please load data into <objectname>.vis_data').attr('x', 15).attr('y', 15);
     } else{
-        let jsmodel = new JSModel(data, var_specs, model);
-        create_views(jsmodel, svg);
+        if(is_valid){
+            let jsmodel = new JSModel(data, var_specs, model);
+            create_views(jsmodel, svg);
+        }
     }
 
     model.on("change:vis_configs", ()=>{
@@ -1964,29 +2082,37 @@ function render({model, el}){
         }
 
         var_specs = model.get("vis_configs");
-        let data = model.get("vis_data");
+        data = model.get("vis_data");
 
-        console.log("Validate", validate_var_specs(var_specs, data));   
+        validator.var_specs = var_specs;
+        validator.data = data;
+        is_valid = validator.validate();
 
-        let jsmodel = new JSModel(data, var_specs, model);
-        create_views(jsmodel, svg);
+        if(is_valid){
+            let jsmodel = new JSModel(data, var_specs, model);
+            create_views(jsmodel, svg);
+        }
     })
 
     model.on("change:vis_data", ()=>{
 
-    console.log("INPUT DATA", data);
         if(first_text){
             first_text.remove();
             first_text=null;
         }
 
-        let data = model.get("vis_data");
+        data = model.get("vis_data");
 
-        console.log("Validate", validate_var_specs(var_specs, data));   
-
-        let jsmodel = new JSModel(data, var_specs, model);
-        create_views(jsmodel, svg);
+        validator.data = data;
+        is_valid = validator.validate();
+        console.log()
+        
+        if(is_valid){
+            let jsmodel = new JSModel(data, var_specs, model);
+            create_views(jsmodel, svg);
+        }
     })
+
 }
 
 
