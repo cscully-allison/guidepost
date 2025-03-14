@@ -51,7 +51,7 @@ Here is a sample table containg jobs-related data from a supercomputer schedulin
 | 12345  | 2023-11-01 21:19:33         |5.2             | 10              | short     | Complete   | User1  |
 | 12346  | 2023-11-01 21:20:01         |12.0            | 20              | long      | Running    | User2  |
 
-In this example, the three data values we will use for our x, y and color variables are: start_time, queue_wait and nodes_requested.  We would also like to use `parition` to facet our data and `user` as an additional categorical variable to filter on. In the [next section](#3-configure-visualization), we show how to specify which columns in your dataset correspond to parts of the visualizaiton.
+In this example, the three data values we will use for our x, y and color variables are: start_time, queue_wait and nodes_requested.  We would also like to use `parition` to facet our data and `user` as an additional categorical variable to filter on. In the [next section](#3-configure-visualization), we show how to specify which columns in your dataset correspond to parts of the visualization.
 
 The `load_data()` function will format your data for json serialization and will update the visualization if it has already been run. This function will report out any columns or rows which are dropped from the original dataset due to conainting `null`/`NaN`/`None` values or unallowed datatypes like `timedelta`s.
 
