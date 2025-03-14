@@ -41,14 +41,18 @@ jobs_data = pd.read_parquet("data/jobs_data.parquet")
 gp.load_data(jobs_data)
 ```
 
-Guidepost supports input data in CSV or Pandas DataFrame format. At least three numerical and 2 categorical columns are required. Datetime columns are also supported.
+Guidepost supports input data in a Pandas DataFrame format. 
 
-Here is a sample table containg jobs-related data from a superocmputer scheduling system:
+At least three numerical and 2 categorical columns are required. Datetime columns are also supported for encoding on the x axis.
+
+Here is a sample table containg jobs-related data from a supercomputer scheduling system:
 
 | job_id |start_time                   | queue_wait     | nodes_requested | partition | status     |  user  |
 |--------|-----------------------------|----------------|-----------------|-----------|------------|--------|
 | 12345  | 2023-11-01 21:19:33         |5.2             | 10              | short     | Complete   | User1  |
 | 12346  | 2023-11-01 21:20:01         |12.0            | 20              | long      | Running    | User2  |
+
+In this example, the three data values we will use for our x, y and color variables are: start_time, queue_wait and nodes_requested.  We would also like to use `parition` to facet my data and `user` as an additional categorical variable to filter on. In the [next section](#3-configure-visualization), we show how to specify which columns in your dataset correspond to parts of the visualizaiton.
 
 The `load_data()` function will format your data for json serialization and will update the visualization if it has already been run. This function will report out any columns or rows which are dropped from the original dataset due to conainting `null`/`NaN`/`None` values or unallowed datatypes like `timedelta`s.
 
@@ -63,7 +67,15 @@ gp.vis_configs = {
         'facet_by': 'partition'
 }
 ```
-See the [Vis Configs Section](#vis_configs) for more details on allowed datatypes.
+Configuration Descriptions
+`x`: Name of the column in the dataframe which will be shown on the x axis of Guidepost's subcharts.
+`y`: Name of the column in the dataframe which will be shown on the y axis of Guidepost's subcharts.
+`color`: Name of the column in the dataframe which will be shown by the darkness of each square's color.
+`color_agg`: The aggregation method used to determine the color. Can be: 'avg', 'variance', 'std', 'sum', or 'median'
+`categorical`: Name of the column containing categorical data values which will be shown on a bar chart associated with each group of the data.
+`facet_by`: Name of the column containing categorical data values which dictate the highest level grouping of the data. Dictates how many sub charts are produced in the visualization. 
+
+See the [Vis Configs Section](#vis_configs) for more details on datatype restrictions for each configuration.
 
 ### 4. Run Visualization
 ```python

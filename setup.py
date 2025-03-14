@@ -39,5 +39,6 @@ setup(
     include_package_data=True,
     package_data={
         'guidepost': ['guidepost.js'],
+        'figs':['guidepost_tutorial_info.png']
     },
 )
