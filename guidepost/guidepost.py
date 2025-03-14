@@ -19,6 +19,10 @@ class Guidepost(anywidget.AnyWidget):
             Load dataframe in a safe way.
             Drop NAs, remove time deltas, report warnings
         '''
+
+        in_df.insert(0, 'gp_idx', range(0, len(in_df)))
+        self.cached_records_df = in_df
+
         _warn_skips = (os.path.dirname('.'),)
         original_cols = in_df.columns
         o_df = in_df.dropna(axis=1, how='all')
@@ -70,14 +74,7 @@ class Guidepost(anywidget.AnyWidget):
                 warnings.warn("Your dataframe is very large. You may experience performance issues. Consider subsampling or reducing the data down to below 200,000 rows to enhance performance.".format(rmvd_cols), skip_file_prefixes=_warn_skips)
 
         
-        #add synthetic index
-        # o_df = o_df.reset_index()
-        # o_df = o_df.rename(columns={"index":"gp_idx"})
-        
-        o_df.insert(0, 'gp_idx', range(0, len(o_df)))
-        
         self.vis_data = o_df.to_dict()
-        self.cached_records_df = o_df
         
         
     def retrieve_selected_data(self):

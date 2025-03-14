@@ -74,10 +74,35 @@ Here is an example of what the viusalization will look like:
 
 ![Image of the guidepost visualization. Annotations label various parts of the visualization: 'Data Grouping Name', 'Color by Categorical Variable', 'Bar Chart (Filter on Click)', 'Current Selection of Records for Export'](figs/guidepost_tutorial_info.png)
 
-### 4. Retrieve Selections from Visualization
+Here we explain some elements of the visualization:
+
+
+#### `Data Grouping Name`: 
+This is name of the high level groups which are dictated by the `facet_by` configuration. If your data only logically contains one group, adding a synthetic column is advised and specifying that column name for the `facet_by` cofiguration.
+
+#### `Main Summary View`:
+The main summary view is the primary view associated with each group of data specified by `facet_by` configuration. This view shows the data organized by the x and y axes. Data values at similar locations along the x and y axes are grouped into squares at that location. The amount of data in each row and column are shown with the histograms framing this view. The color of each square shows an aggregrate of a third numerical variable that exists on each data value.
+
+#### `Color by Numerical Variable`:
+Each square in the main summary view is an aggregrate of datapoints at that x and y location. The color of a given square is dictated by the variable shown here. For example, in the bottom subchart, we see that there is a correlation between higher queue_waits, queue_wait_predictions and processor counts. The darker squares indicate higher processor counts on average.
+
+
+#### `Bar Chart (Filter on Click)`:
+The bar chart in the lower right hand corner of each row of subcharts shows the top ten instances of the column passed to the `categorical` configuration. It will filter the dataset when a bar is hovered over. Clicking a bar will fix that filter in place. Clicking again will remove the filter when the mouse leaves the bar.
+
+
+#### `Current Seleciton of Records for Export`: 
+Records can be selected for export from the visualization by brushing over the right and bottom histograms. The area of selected data is indicated by the orange coloring on the main summary view. The amont of records selected is indicated at the top left for each chart. Selections can be made across multiple charts. The final selection is returned as one dataframe containg all selections.
+
+
+### 5. Retrieve Selections from Visualization
+After selecting data by brushing over either the bottom or right histograms associated with a subchart, you can retrieve selected data using the following command:
+
 ```python
-gp.retrieve_selected_data()
+df = gp.retrieve_selected_data()
 ```
+
+This will return a pandas dataframe containing all your subselected rows from the original dataset.
 
 
 
