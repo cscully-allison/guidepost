@@ -1,6 +1,6 @@
 # Guidepost
 
-Guidepost is a Python library designed for seamless integration into Jupyter notebooks to visualize High Performance Computing (HPC) job data. It simplifies the process of understanding HPC workloads by providing a single, interactive visualization that offers an intuitive overview of job performance, resource usage, and other critical metrics.
+Guidepost is a Python library designed to visualize High Performance Computing (HPC) job data in jupyter notebooks. It simplifies the process of understanding HPC workloads by providing a single, interactive visualization that offers an intuitive overview of job performance, resource usage, and other critical metrics.
 
 ---
 
@@ -9,7 +9,6 @@ Guidepost is a Python library designed for seamless integration into Jupyter not
 - **Jupyter Notebook Integration**: Designed for your existing workflow. Load and interact with the visualization directly in your Jupyter environment.
 - **HPC Job Data Insights**: Visualize key metrics, including job runtimes, resource usage, and queue performance.
 - **Interactive Exploration**: Export selections of specific jobs or groups of jobs for deeper analysis.
-- **Lightweight and Easy to Use**: Focused on simplicity and efficiency for HPC users.
 
 ---
 
@@ -41,7 +40,7 @@ jobs_data = pd.read_parquet("data/jobs_data.parquet")
 gp.load_data(jobs_data)
 ```
 
-Guidepost supports input data in a Pandas DataFrame format. 
+Guidepost supports input data in a pandas DataFrame format. 
 
 At least three numerical and 2 categorical columns are required. Datetime columns are also supported for encoding on the x axis.
 
@@ -52,7 +51,7 @@ Here is a sample table containg jobs-related data from a supercomputer schedulin
 | 12345  | 2023-11-01 21:19:33         |5.2             | 10              | short     | Complete   | User1  |
 | 12346  | 2023-11-01 21:20:01         |12.0            | 20              | long      | Running    | User2  |
 
-In this example, the three data values we will use for our x, y and color variables are: start_time, queue_wait and nodes_requested.  We would also like to use `parition` to facet my data and `user` as an additional categorical variable to filter on. In the [next section](#3-configure-visualization), we show how to specify which columns in your dataset correspond to parts of the visualizaiton.
+In this example, the three data values we will use for our x, y and color variables are: start_time, queue_wait and nodes_requested.  We would also like to use `parition` to facet our data and `user` as an additional categorical variable to filter on. In the [next section](#3-configure-visualization), we show how to specify which columns in your dataset correspond to parts of the visualizaiton.
 
 The `load_data()` function will format your data for json serialization and will update the visualization if it has already been run. This function will report out any columns or rows which are dropped from the original dataset due to conainting `null`/`NaN`/`None` values or unallowed datatypes like `timedelta`s.
 
@@ -74,7 +73,7 @@ gp.vis_configs = {
 - `color`: Name of the column in the dataframe which will be shown by the darkness of each square's color.
 - `color_agg`: The aggregation method used to determine the color. Can be: 'avg', 'variance', 'std', 'sum', or 'median'
 - `categorical`: Name of the column containing categorical data values which will be shown on a bar chart associated with each group of the data.
-- `facet_by`: Name of the column containing categorical data values which dictate the highest level grouping of the data. Dictates how many sub charts are produced in the visualization. 
+- `facet_by`: Name of the column containing categorical data values which dictate the highest level grouping of the data and organizes the data into groups of subcharts.
 
 See the [Vis Configs Section](#vis_configs) for more details on datatype restrictions for each configuration.
 
@@ -93,7 +92,7 @@ Here is an example of what the viusalization will look like:
 Here we explain some elements of the visualization:
 
 #### `Data Grouping Name`: 
-This is name of the high level groups which are dictated by the `facet_by` configuration. If your data only logically contains one group, adding a synthetic column is advised and specifying that column name for the `facet_by` cofiguration.
+This is name of the high level groups which are dictated by the `facet_by` configuration. Each group of subcharts corresponds to all data associated with an instance of a value in `facet_by`. If your data only logically contains one group, adding a synthetic column and specifying that column name for the `facet_by` cofiguration is advised.
 
 #### `Main Summary View`:
 The main summary view is the primary view associated with each group of data specified by `facet_by` configuration. This view shows the data organized by the x and y axes. Data values at similar locations along the x and y axes are grouped into squares at that location. The amount of data in each row and column are shown with the histograms framing this view. The color of each square shows an aggregrate of a third numerical variable that exists on each data value.
@@ -107,7 +106,7 @@ The bar chart in the lower right hand corner of each row of subcharts shows the 
 
 
 #### `Current Seleciton of Records for Export`: 
-Records can be selected for export from the visualization by brushing over the right and bottom histograms. The area of selected data is indicated by the orange coloring on the main summary view. The amont of records selected is indicated at the top left for each chart. Selections can be made across multiple charts. The final selection is returned as one dataframe containg all selections.
+Records can be selected for export from the visualization by brushing over the right and bottom histograms. The area of selected data is indicated by the orange coloring on the main summary view. The amount of records selected is indicated at the top left for each chart. Selections can be made across multiple charts. The final selection is returned as one dataframe containg all selections.
 
 
 ### 5. Retrieve Selections from Visualization
@@ -118,7 +117,7 @@ df = gp.retrieve_selected_data()
 
 After selecting data by brushing over either the bottom or right histograms associated with a subchart, you can retrieve selected data using the above method.
 
-This will return a pandas dataframe containing all your subselected rows from the original dataset.
+This will return a pandas DataFrame containing all your subselected rows from the original dataset.
 
 
 
@@ -137,12 +136,6 @@ Below is an example of the kind of data Guidepost works with:
 
 ## API Reference
 
-### `load_data`
-- **Description**: Loads a pandas dataframe into the guidepost system for visualizaiton. Will report data dropped from the dataframe if it contains NaNs, `timedeltas`, `arrays` in cells, or other invalid values. 
-- **Arguments**:
-  - `in_df` (Pandas Dataframe): The dataframe containing data to be visualized.
-  - `supress_warnings` (Boolean): Specifies whether to suppress warnings when loading data. Defaults to `False` 
-
 ### `vis_data`
 - **Description**: Holds the vis data to passed to the visualization. Updates to this variable will automatically update the visualization.
 
@@ -158,6 +151,12 @@ Vis configurations must be specified as a python dictonary with the following fi
 - 'categorical': A categorical variable from the dataset. The data column must be a string datatype. The visualization will show the top 10 instances of this variable.
 - 'facet_by': A categorical variable from the dataset. Automatically looks for 'queue' or 'partition' if this config is not specified.
 
+
+### `load_data(in_df, supress_warnings)`
+- **Description**: Loads a pandas dataframe into the guidepost system for visualizaiton. Will report data dropped from the dataframe if it contains NaNs, `timedeltas`, `arrays` in cells, or other invalid values. 
+- **Arguments**:
+  - `in_df` (Pandas Dataframe): The dataframe containing data to be visualized.
+  - `supress_warnings` (Boolean): Specifies whether to suppress warnings when loading data. Defaults to `False` 
 
 
 ### `retrieve_selected_data()`
