@@ -33,51 +33,64 @@ gp = Guidepost()
 ```
 
 ### 2. Load Your Data
-Guidepost supports input data in CSV or Pandas DataFrame format. Ensure your data includes columns such as job IDs, runtime, and resource usage.
+Guidepost supports input data in CSV or Pandas DataFrame format. At least three numerical and 2 categorical columns are required. Datetime columns are also supported
+
+Here is a sample table containg jobs-related data from a superocmputer scheduling system:
+
+| job_id |start_time                   | queue_wait     | nodes_requested | partition | status     |  user  |
+|--------|-----------------------------|----------------|-----------------|-----------|------------|--------|
+| 12345  | 2023-11-01 21:19:33         |5.2             | 10              | short     | Complete   | User1  |
+| 12346  | 2023-11-01 21:20:01         |12.0            | 20              | long      | Running    | User2  |
 
 ```python
 import pandas as pd
-
 jobs_data = pd.read_parquet("data/jobs_data.parquet")
+gp.load_data(jobs_data)
 ```
+
+The `load_data()` function will format your data for json serialization and will update the visualization if it has already been run. This function will report out any columns or rows which are dropped from the original dataset due to conainting `null`/`NaN`/`None` values or unallowed datatypes like `timedelta`s.
 
 ### 3. Configure Visualization
-
 ```python
-gp.vis_data = jobs_data
 gp.vis_configs = {
-        'x': 'queue_wait',
-        'y': 'start_time',
-        'color': 'nodes_req',
+        'x': 'start_time',
+        'y': 'queue_wait',
+        'color': 'nodes_requested',
         'color_agg': 'avg',
-        'categorical': 'user'
+        'categorical': 'user',
+        'facet_by': 'partition'
 }
 ```
+See the [Vis Configs Section](#vis_configs) for more details on allowed datatypes.
 
 ### 4. Run Visualization
 ```python
 gp
 ```
 
-Run the above command in a Jupyter notebook cell to load data.
+Run the above command in a Jupyter notebook cell to start the visualization.
+
+Here is an example of what the viusalization will look like:
+
+[Image of the guidepost visualization. Annotations label various parts of the visualization: 'Data Grouping Name', 'Color by Categorical Variable', 'Bar Chart (Filter on Click)', 'Current Selection of Records for Export'](figs/guidepost_tutorial_info.png)
 
 ### 4. Retrieve Selections from Visualization
 ```python
 gp.retrieve_selected_data()
 ```
 
+
+
+
 ---
 
 ## Example Dataset
 Below is an example of the kind of data Guidepost works with:
 
-| Job ID | Runtime (hours) | Nodes Used | partition | Status |
-|--------|-----------------|------------|-----------|--------|
-| 12345  | 5.2             | 10         | short | Complete |
-| 12346  | 12.0            | 20         | long  | Running  |
-
-
-Note that a column named "partition" must be sepecified.
+| job_id |start_time                   | queue_wait     | nodes_requested | partition | status     |  user  |
+|--------|-----------------------------|----------------|-----------------|-----------|------------|--------|
+| 12345  | 2023-11-01 21:19:33         |5.2             | 10              | short     | Complete   | User1  |
+| 12346  | 2023-11-01 21:20:01         |12.0            | 20              | long      | Running    | User2  |
 
 ---
 
@@ -95,7 +108,8 @@ Vis configurations must be specified as a python dictonary with the following fi
 - 'y': The column from the pandas dataframe which will be shown on the y axis of this visualization. This can be an integer or float.
 - 'color': The column from the pandas dataframe which will determine the color of squares in the main summary view. This can be an integer or float.
 - 'color_agg': This is a specification for what aggregation is used for the color variable. It can be: 'avg', 'variance', 'std', 'sum', or 'median'
-- 'categorical': A categorical variable from the dataset. It must be a string. The visualization will show the top 7 instances of this variable. 
+- 'categorical': A categorical variable from the dataset. The data column must be a string datatype. The visualization will show the top 10 instances of this variable.
+- 'facet_by': A categorical variable from the dataset. Automatically looks for 'queue' or 'partition' if this config is not specified.
 
 
 

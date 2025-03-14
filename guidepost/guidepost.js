@@ -38,7 +38,7 @@ const CAT_HISTOGRAM_LAYOUT = {
 
 const LEGEND_LAYOUT = {
     width: 100,
-    height: 200,
+    height: OVERVIEW_LAYOUT.height,
     outer_margin: 10,
     inner_padding: 30,
     top_padding: 45,
@@ -52,12 +52,14 @@ const Y_VARIABLE_OFFSET = 0;
 const num_rows = 50;
 const num_cols = 150;
 
+const MIN_BAR_WIDTH = 45;
+
 // COLORS
 const BLUE = 'rgba(32, 61, 192, 0.7)';
 const RICH_BLUE = 'rgb(32, 61, 192)';
 
-const TAN = 'rgb(237, 203, 176)';
-const RICH_TAN = 'rgb(202, 172, 150)';
+const TAN = 'rgb(215, 194, 191)';
+const RICH_TAN = 'rgb(180, 144, 139)';
 
 let draw_width = OVERVIEW_LAYOUT.width-2*OVERVIEW_LAYOUT.inner_padding;
 let draw_height = OVERVIEW_LAYOUT.height - 2*OVERVIEW_LAYOUT.inner_padding;
@@ -441,6 +443,7 @@ class JSModel{
      * @returns {Array} - The sanitized and initialized data.
      */
     sanitize_and_intialize_data(data){
+        this.global_sum_stats = {x:{},y:{},color:{}};
         for(let fac of this.facets){
             //store data about what types of scales x and y are
             this.scale_types[fac] = {
@@ -463,6 +466,15 @@ class JSModel{
             }
 
 
+            // this.global_sum_stats.x.max = Math.max(this.faceted_sum_stats[fac].x.max, this.global_sum_stats.x.max);
+            // this.global_sum_stats.y.max = Math.max(this.faceted_sum_stats[fac].y.max, this.global_sum_stats.y.max);
+            // this.global_sum_stats.color.max = Math.max(this.faceted_sum_stats[fac].color.max, this.global_sum_stats.color.max);
+
+            // this.global_sum_stats.x.min = Math.min(this.faceted_sum_stats[fac].x.min, this.global_sum_stats.x.min);
+            // this.global_sum_stats.y.min = Math.min(this.faceted_sum_stats[fac].y.min, this.global_sum_stats.y.min);
+            // this.global_sum_stats.color.min = Math.min(this.faceted_sum_stats[fac].color.min, this.global_sum_stats.color.max);
+
+
             data[fac] = this.sanitize_data_for_log(data[fac], this.vars.y);
 
             this.faceted_sum_stats[fac] = {};
@@ -472,6 +484,7 @@ class JSModel{
 
             let sum_stats = this.faceted_sum_stats[fac];
 
+            
             this.faceted_bins[fac] = {}
             
             //conditional x axis thresholds based on time or numbers
@@ -661,7 +674,18 @@ class JSModel{
             }
         }
 
-        this.anywidget_model.set("selected_records", JSON.stringify(this.brushed_data));
+        let return_ids = [];
+        let test = [];
+        for(let fac of this.facets){
+            for(let d of this.brushed_data[fac]){
+                return_ids.push(d.gp_idx);
+                test.push({'idx':d.gp_idx, 'content':d});
+            }
+        }
+
+        console.log("TEST", test);
+
+        this.anywidget_model.set("selected_records", JSON.stringify(return_ids));
         this.anywidget_model.save_changes();
 
         if(!no_render){
@@ -993,7 +1017,7 @@ class Heatmap{
         if(self.model.brushed_ranges[self.facet].x_range.length != 0
             && self.model.brushed_ranges[self.facet].y_range.length == 0){
             if(test_threshold >= self.model.brushed_ranges[self.facet].x_range[0] 
-                && test_threshold < self.model.brushed_ranges[self.facet].x_range[1]){
+                && test_threshold <= self.model.brushed_ranges[self.facet].x_range[1]){
                     return self.highlighted_scale_color(col_data.bins[row_num][self.model.vars.color_agg]);
             }
         }
@@ -1003,7 +1027,7 @@ class Heatmap{
             if(parseInt(row_num) >= self.model.brushed_ranges[self.facet].y_range[1] 
                 && parseInt(row_num) < self.model.brushed_ranges[self.facet].y_range[0]
                 && test_threshold >= self.model.brushed_ranges[self.facet].x_range[0] 
-                && test_threshold < self.model.brushed_ranges[self.facet].x_range[1]){
+                && test_threshold <= self.model.brushed_ranges[self.facet].x_range[1]){
                 return self.highlighted_scale_color(col_data.bins[row_num][self.model.vars.color_agg]);
             }
         }
@@ -1021,17 +1045,19 @@ class Heatmap{
     focus_col(update_element){
        let self = this;
 
+       let base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
+
        self.scale_y_blocks.range([OVERVIEW_LAYOUT.inner_padding-(zoom_factor_v/2), OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding + (zoom_factor_v/2)]);
 
        update_element.raise();
     
        update_element.selectAll('.row')
-            .attr('width', ()=>{return (draw_width/ self.model.faceted_bins[self.facet].column.length) + zoom_factor_h})
+            .attr('width', ()=>{return base_width + zoom_factor_h})
             .attr('height', ()=>{return ( (OVERVIEW_LAYOUT.height + zoom_factor_v) - 2*OVERVIEW_LAYOUT.inner_padding) / self.model.faceted_bins[self.facet].column[0].bins.length})
             .attr('y', (d, i)=>{return self.scale_y_blocks(i) - OVERVIEW_LAYOUT.inner_padding});
         
         update_element.selectAll('.col-bg')
-            .attr('width', ()=>{return (draw_width / self.model.faceted_bins[self.facet].column.length) + zoom_factor_h})
+            .attr('width', ()=>{return base_width + zoom_factor_h})
             .attr('height', ()=>{return ( (OVERVIEW_LAYOUT.height + zoom_factor_v) - 2*OVERVIEW_LAYOUT.inner_padding)})
             .attr('y', -(zoom_factor_v/2));
             
@@ -1050,24 +1076,19 @@ class Heatmap{
     unfocus_col(update_element){
         let self = this;
 
-        // console.log("UNFOCUS",update_element.node())
+
+        let base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
         self.scale_y_blocks.range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding]);
 
 
         update_element.selectAll('.col-bg')
-            .attr('width', (d)=>{
-                let base_width = (draw_width / self.model.faceted_bins[self.facet].column.length);
-                return base_width;
-            })
+            .attr('width', base_width)
             .attr('height', ()=>{return draw_height})
             .attr('y', 0);
 
 
         update_element.selectAll('.row')  
-            .attr('width', (d)=>{
-                let base_width = (draw_width / self.model.faceted_bins[self.facet].column.length);
-                return base_width;
-            })
+            .attr('width', base_width)
             .attr('height', (d)=>{return draw_height / self.model.faceted_bins[self.facet].column[0].bins.length})
             .attr('y', (d,i)=>{return self.scale_y_blocks(i) - OVERVIEW_LAYOUT.inner_padding});
 
@@ -1111,197 +1132,202 @@ class Heatmap{
 
         console.log(this.model.faceted_bins[this.facet].column);
 
-        this.view
-        .selectAll('.column')
-        .data(this.model.faceted_bins[this.facet].column)
-        .join(
-            function(enter){
-                let col = enter.append('g')
-                    .attr('class', 'column')
-                    .attr('transform', (d, i)=>{
-                        if(typeof(d.threshold) === 'string'){
-                            return `translate(${self.scale_x.scale(new Date(d.threshold))}, ${OVERVIEW_LAYOUT.inner_padding})`
-                        }
-                        return `translate(${self.scale_x.scale(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`
-                    });
+        let base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
 
+        if(self.model.row_major_counts[self.facet].length < 2){
+            this.view
+                .append('text')
+                .text(`There are too few datapoints in this category: ${self.facet}. To remove this chart, please filter this category from the original dataset.`)
+                .attr('text-anchor', 'middle')
+                .attr('transform', `translate(${draw_width/2},${draw_height/2})`)
+        }   
+        else{
+            this.view
+            .selectAll('.column')
+            .data(this.model.faceted_bins[this.facet].column)
+            .join(
+                function(enter){
+                    let col = enter.append('g')
+                        .attr('class', 'column')
+                        .attr('transform', (d, i)=>{
+                            if(typeof(d.threshold) === 'string'){
+                                return `translate(${self.scale_x.scale(new Date(d.threshold))}, ${OVERVIEW_LAYOUT.inner_padding})`
+                            }
+                            return `translate(${self.scale_x.scale(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`
+                        });
 
-                
-                col.append('rect')
-                    .attr('class', 'col-bg')
-                    .attr('height', OVERVIEW_LAYOUT.height - 2*OVERVIEW_LAYOUT.inner_padding)
-                    .attr('width', function(d){
-                        let base_width = (draw_width / self.model.faceted_bins[self.facet].column.length);
-                        return base_width;
-                    })
-                    .attr('fill', '#ffffff');
-
-                let date  = col.append('g')
-                    .attr('class', 'text-field')
-                    .attr('transform', `translate(${0}, ${-20})`)
-                    .style('visibility', (d)=>{
-                        if(self.pinned_cols.includes(String(new Date(d.threshold)))){
-                            return 'visible';
-                        }
-                        return 'hidden';
-                    });
-                    
-                date.append('rect')
-                    .attr('class', 'text-bg')
-                    .attr('height', 15)
-                    .attr('width', 150)
-                    .attr('fill', 'white');
-                    
-                date.append('text')
-                    .attr('fill', 'black')
-                    .text((data)=>{
-                        if(self.model.scale_types[self.facet].x.datetime){
-                            return `${self.format_utc_date(new Date(data.threshold))} (Local: ${new Date(data.threshold).toLocaleDateString()})`;
-                        }
-                        else{
-                            let current_threshold_index = self.model.x_axis_thresholds[self.facet].indexOf(data.threshold);
-                            return `Records for '${self.model.vars.x}' range: (${self.format_number_with_commas(Math.floor(data.threshold))} - ${self.format_number_with_commas(Math.floor(self.model.x_axis_thresholds[self.facet][current_threshold_index+1]))})`;
-                        }
-                    })
-                    .attr('text-anchor', 'middle');
-
-                col.each(
-                    function (column){
-                        for(let row in column.bins){
-                            d3.select(this)
-                                .append('rect')
-                                .attr('class', 'row')
-                                .attr('width', (d, i)=>{
-                                    let base_width = (draw_width / self.model.faceted_bins[self.facet].column.length);
-                                    return base_width;
-                                })
-                                .attr('height', (d)=>{return draw_height / column.bins.length})
-                                .attr('y', ()=>{return self.scale_y_blocks(row) - OVERVIEW_LAYOUT.inner_padding})
-                                .attr('x', ()=>{return 0})
-                                .attr('fill', (d)=>{
-                                    if(column.bins[row].values.length == 0){
-                                        return 'rgba(240,240,240)'
-                                    }
-                                    return self.scale_color(column.bins[row][self.model.vars.color_agg])
-                                })
-                        }
-                    }
-                )
-                col.on('mouseenter', function (e, d){
-                    delete self.cached_bins['hover'];
-                    self.focus_col(d3.select(e.target));
-                    if(!Object.keys(self.cached_bins).includes(String(d.threshold))){
-                        let dt_text_selection = d3.select(e.target).select('.text-field');
-                        dt_text_selection.style('visibility', 'visible')
-                            .select('text')
-                            .text((data)=>{
-                                if(self.model.scale_types[self.facet].x.datetime){
-                                    return `${self.format_utc_date(new Date(data.threshold))} (Local: ${new Date(data.threshold).toLocaleDateString()})`;
-                                }
-                                else{
-                                    let current_threshold_index = self.model.x_axis_thresholds[self.facet].indexOf(data.threshold);
-                                    return `Records for '${self.model.vars.x}' range: (${self.format_number_with_commas(Math.floor(data.threshold))} - ${self.format_number_with_commas(Math.floor(self.model.x_axis_thresholds[self.facet][current_threshold_index+1]))})`;
-                                }
-                            });
-
-                        d3.select(e.target)
-                            .select('.text-bg')
-                            .attr('width', ()=>{
-                                return d3.select(e.target).select('.text-field').select('text').node().getBBox().width + 10;
-                            }).attr('transform', `translate(${-(d3.select(e.target).select('.text-field').select('text').node().getBBox().width/2)},${0})`)
-                        
-                        self.cached_bins['hover'] = d.bins
-                    }
 
                     
-                    self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, self.cached_bins);
-                })
-                .on('mouseleave', function(e,d){
-                    if(!Object.keys(self.cached_bins).includes(String(new Date(d.threshold)))){
-                        self.unfocus_col(d3.select(e.target));
-                        d3.select(e.target)
-                            .select('.text-field')
-                            .style('visibility', 'hidden');
-                    }
-        
-                    delete self.cached_bins['hover'];
-                    self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, self.cached_bins);
-                })
-                // CUTTING PIN FUNCTIONALITY FOR NOW! Its a QOL Improvement we don't need but may come back later.
-                // .on('click', function(e, d){
-                //     if(self.pinned_cols.includes(String(new Date(d.threshold)))){
-                //         self.pinned_cols = self.pinned_cols.filter((item) => item !== d.threshold);
-                //         delete self.cached_bins[d.threshold];
-                //     }else{
-                //         self.pinned_cols.push(String(new Date(d.threshold)));
-                //         self.cached_bins[String(new Date(d.threshold))] = d.bins;
-                //     }
+                    col.append('rect')
+                        .attr('class', 'col-bg')
+                        .attr('height', OVERVIEW_LAYOUT.height - 2*OVERVIEW_LAYOUT.inner_padding)
+                        .attr('width', base_width)
+                        .attr('fill', '#ffffff');
 
-                //     if (self.pinned_cols.length == 0){
-                //         self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, {});
-                //     } else {
-                //         self.model.update_subselected_data(self.facet, [`${self.facet}_right_histogram`, `${self.facet}_bottom_histogram`, `${self.facet}_legend`], [], "");
-                //     }
-
-                // })
-            },
-            function(update){
-                update.attr('transform', (d, i)=>{
-                        if(typeof(d.threshold) === 'string'){
-                            return `translate(${self.scale_x.scale(new Date(d.threshold))}, ${OVERVIEW_LAYOUT.inner_padding})`
-                        }
-                        return `translate(${self.scale_x.scale(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`
-                    });
-
-                update.select('.col-bg')
-                        .style('visibility', (d)=>{
-                            return 'hidden';
-                        })
-
-                update.select('.text-field')
+                    let date  = col.append('g')
+                        .attr('class', 'text-field')
+                        .attr('transform', `translate(${0}, ${-20})`)
                         .style('visibility', (d)=>{
                             if(self.pinned_cols.includes(String(new Date(d.threshold)))){
                                 return 'visible';
                             }
                             return 'hidden';
+                        });
+                        
+                    date.append('rect')
+                        .attr('class', 'text-bg')
+                        .attr('height', 15)
+                        .attr('width', 150)
+                        .attr('fill', 'white');
+                        
+                    date.append('text')
+                        .attr('fill', 'black')
+                        .text((data)=>{
+                            if(self.model.scale_types[self.facet].x.datetime){
+                                return `${self.format_utc_date(new Date(data.threshold))} (Local: ${new Date(data.threshold).toLocaleDateString()})`;
+                            }
+                            else{
+                                let current_threshold_index = self.model.x_axis_thresholds[self.facet].indexOf(data.threshold);
+                                return `Records for '${self.model.vars.x}' range: (${self.format_number_with_commas(Math.floor(data.threshold))} - ${self.format_number_with_commas(Math.floor(self.model.x_axis_thresholds[self.facet][current_threshold_index+1]))})`;
+                            }
                         })
-                        .select('text')
-                        .text((d)=>{
-                            return `${new Date(d.threshold).toUTCString()} (${new Date(d.threshold).toLocaleDateString()})`;
+                        .attr('text-anchor', 'middle');
+
+                    col.each(
+                        function (column){
+                            for(let row in column.bins){
+                                d3.select(this)
+                                    .append('rect')
+                                    .attr('class', 'row')
+                                    .attr('width', base_width)
+                                    .attr('height', (d)=>{return draw_height / column.bins.length})
+                                    .attr('y', ()=>{return self.scale_y_blocks(row) - OVERVIEW_LAYOUT.inner_padding})
+                                    .attr('x', ()=>{return 0})
+                                    .attr('fill', (d)=>{
+                                        if(column.bins[row].values.length == 0){
+                                            return 'rgba(240,240,240)'
+                                        }
+                                        return self.scale_color(column.bins[row][self.model.vars.color_agg])
+                                    })
+                            }
+                        }
+                    )
+                    col.on('mouseenter', function (e, d){
+                        delete self.cached_bins['hover'];
+                        self.focus_col(d3.select(e.target));
+                        if(!Object.keys(self.cached_bins).includes(String(d.threshold))){
+                            let dt_text_selection = d3.select(e.target).select('.text-field');
+                            dt_text_selection.style('visibility', 'visible')
+                                .select('text')
+                                .text((data)=>{
+                                    if(self.model.scale_types[self.facet].x.datetime){
+                                        return `${self.format_utc_date(new Date(data.threshold))} (Local: ${new Date(data.threshold).toLocaleDateString()})`;
+                                    }
+                                    else{
+                                        let current_threshold_index = self.model.x_axis_thresholds[self.facet].indexOf(data.threshold);
+                                        return `Records for '${self.model.vars.x}' range: (${self.format_number_with_commas(Math.floor(data.threshold))} - ${self.format_number_with_commas(Math.floor(self.model.x_axis_thresholds[self.facet][current_threshold_index+1]))})`;
+                                    }
+                                });
+
+                            d3.select(e.target)
+                                .select('.text-bg')
+                                .attr('width', ()=>{
+                                    return d3.select(e.target).select('.text-field').select('text').node().getBBox().width + 10;
+                                }).attr('transform', `translate(${-(d3.select(e.target).select('.text-field').select('text').node().getBBox().width/2)},${0})`)
+                            
+                            self.cached_bins['hover'] = d.bins
+                        }
+
+                        
+                        self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, self.cached_bins);
+                    })
+                    .on('mouseleave', function(e,d){
+                        if(!Object.keys(self.cached_bins).includes(String(new Date(d.threshold)))){
+                            self.unfocus_col(d3.select(e.target));
+                            d3.select(e.target)
+                                .select('.text-field')
+                                .style('visibility', 'hidden');
+                        }
+            
+                        delete self.cached_bins['hover'];
+                        self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, self.cached_bins);
+                    })
+                    // CUTTING PIN FUNCTIONALITY FOR NOW! Its a QOL Improvement we don't need but may come back later.
+                    // .on('click', function(e, d){
+                    //     if(self.pinned_cols.includes(String(new Date(d.threshold)))){
+                    //         self.pinned_cols = self.pinned_cols.filter((item) => item !== d.threshold);
+                    //         delete self.cached_bins[d.threshold];
+                    //     }else{
+                    //         self.pinned_cols.push(String(new Date(d.threshold)));
+                    //         self.cached_bins[String(new Date(d.threshold))] = d.bins;
+                    //     }
+
+                    //     if (self.pinned_cols.length == 0){
+                    //         self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, {});
+                    //     } else {
+                    //         self.model.update_subselected_data(self.facet, [`${self.facet}_right_histogram`, `${self.facet}_bottom_histogram`, `${self.facet}_legend`], [], "");
+                    //     }
+
+                    // })
+                },
+                function(update){
+                    update.attr('transform', (d, i)=>{
+                            if(typeof(d.threshold) === 'string'){
+                                return `translate(${self.scale_x.scale(new Date(d.threshold))}, ${OVERVIEW_LAYOUT.inner_padding})`
+                            }
+                            return `translate(${self.scale_x.scale(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`
                         });
 
-                //calling this as a .each so that we have access to
-                // column data for each row
-                update.each(
-                    function(col_data){
-                        d3.select(this).selectAll('.row').each(
-                            function(row_data, row_num){
-                                d3.select(this)
-                                    .transition()
-                                    .attr('fill', ()=>{
-                                        if(col_data.bins[row_num].values.length > 0){
-                                            return self.manage_highlight(col_data, row_num);
-                                        }
-                                        else{
-                                            return 'rgba(240,240,240)';
-                                        }
-                                    })
-                            }          
-                        )
-        
-                        // if(!self.pinned_cols.includes(String(new Date(col_data.threshold)))){
-                        //     self.unfocus_col(d3.select(this));
-                        // }else{
-                        //     self.focus_col(d3.select(this));
-                        // }
-                })
-                
-            },
-            function(end){
-                end.remove();
-            }
+                    update.select('.col-bg')
+                            .style('visibility', (d)=>{
+                                return 'hidden';
+                            })
 
-        );
+                    update.select('.text-field')
+                            .style('visibility', (d)=>{
+                                if(self.pinned_cols.includes(String(new Date(d.threshold)))){
+                                    return 'visible';
+                                }
+                                return 'hidden';
+                            })
+                            .select('text')
+                            .text((d)=>{
+                                return `${new Date(d.threshold).toUTCString()} (${new Date(d.threshold).toLocaleDateString()})`;
+                            });
+
+                    //calling this as a .each so that we have access to
+                    // column data for each row
+                    update.each(
+                        function(col_data){
+                            d3.select(this).selectAll('.row').each(
+                                function(row_data, row_num){
+                                    d3.select(this)
+                                        .transition()
+                                        .attr('fill', ()=>{
+                                            if(col_data.bins[row_num].values.length > 0){
+                                                return self.manage_highlight(col_data, row_num);
+                                            }
+                                            else{
+                                                return 'rgba(240,240,240)';
+                                            }
+                                        })
+                                }          
+                            )
+            
+                            // if(!self.pinned_cols.includes(String(new Date(col_data.threshold)))){
+                            //     self.unfocus_col(d3.select(this));
+                            // }else{
+                            //     self.focus_col(d3.select(this));
+                            // }
+                    })
+                    
+                },
+                function(end){
+                    end.remove();
+                }
+
+            );
+        }
     }
 
 
@@ -1465,67 +1491,68 @@ class Histogram{
      */
     render(){
         const self = this;
-        if(this.orientation == 'bottom'){
-            this.view.selectAll('.column')
-                    .data(self.model.faceted_bins[self.facet].column, function(d){return this.id} )
+        let bar_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
+
+        if(self.model.row_major_counts[self.facet].length > 2){
+            if(this.orientation == 'bottom'){
+                this.view.selectAll('.column')
+                        .data(self.model.faceted_bins[self.facet].column, function(d){return this.id} )
+                        .join(
+                            function(enter){
+                                let col = enter.append('g')
+                                                .attr('class', 'column')
+                                                .attr('transform', (d, i)=>{
+                                                    if(typeof(d.threshold) === 'string'){
+                                                        return `translate(${self.scale_x.scale(new Date(d.threshold))}, ${OVERVIEW_LAYOUT.inner_padding})`
+                                                    }
+                                                    return `translate(${self.scale_x.scale(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`
+                                                });
+
+                                col.append('rect')
+                                    .attr('class', 'bar')
+                                    .attr('height', (d)=>{return self.scale_y(d.column_values.length)})
+                                    .attr('width', bar_width)
+                                    .attr('fill', TAN)
+                                    .attr(`transform`, (d)=>{return `translate(${0}, ${(HISTOGRAM_LAYOUT.height- self.scale_y(d.column_values.length))-2*HISTOGRAM_LAYOUT.inner_padding})`});
+                            },
+                            function(update){
+                                update.selectAll('rect')
+                                    .transition()
+                                    .attr('height', (d,i)=>{return self.scale_y(self.model.faceted_bins[self.facet].column[i].column_values.length)})
+                            }
+                        );
+            }
+
+            if(this.orientation == "right"){
+                this.view
+                    .selectAll('.row')
+                    .data(self.model.row_major_counts[self.facet])
                     .join(
                         function(enter){
-                            let col = enter.append('g')
-                                            .attr('class', 'column')
-                                            .attr('transform', (d, i)=>{
-                                                if(typeof(d.threshold) === 'string'){
-                                                    return `translate(${self.scale_x.scale(new Date(d.threshold))}, ${OVERVIEW_LAYOUT.inner_padding})`
-                                                }
-                                                return `translate(${self.scale_x.scale(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`
-                                            });
+                            let row = enter.append('g')
+                                            .attr('class', 'row')
+                                            .attr('transform', (d, i)=>{return `translate(${VERT_HISTOGRAM_LAYOUT.inner_padding},${self.scale_y(i)})`});
 
-                            col.append('rect')
+                            row.append('rect')
                                 .attr('class', 'bar')
-                                .attr('height', (d)=>{return self.scale_y(d.column_values.length)})
-                                .attr('width', (d)=>{
-                                    let base_width = (draw_width / self.model.faceted_bins[self.facet].column.length);
-                                    return base_width;
-                                })
-                                .attr('fill', TAN)
-                                .attr(`transform`, (d)=>{return `translate(${0}, ${(HISTOGRAM_LAYOUT.height- self.scale_y(d.column_values.length))-2*HISTOGRAM_LAYOUT.inner_padding})`});
+                                .attr('width', (d)=>{return self.scale_x(d)})
+                                .attr('height', (d)=>{return draw_height / self.model.faceted_bins[self.facet].column[0].bins.length})
+                                .attr('fill', TAN);
+                            
+                            return enter;
                         },
                         function(update){
-                            update.selectAll('rect')
+                            update.select('.bar')
                                 .transition()
-                                .attr('height', (d,i)=>{return self.scale_y(self.model.faceted_bins[self.facet].column[i].column_values.length)})
+                                .attr('width', (d)=>{return self.scale_x(d)});
+                        },
+                        function(exit){
+                            exit.remove();
                         }
-                    );
+                    )
+            }
         }
-
-        if(this.orientation == "right"){
-            this.view
-                .selectAll('.row')
-                .data(self.model.row_major_counts[self.facet])
-                .join(
-                    function(enter){
-                        let row = enter.append('g')
-                                        .attr('class', 'row')
-                                        .attr('transform', (d, i)=>{return `translate(${VERT_HISTOGRAM_LAYOUT.inner_padding},${self.scale_y(i)})`});
-
-                        row.append('rect')
-                            .attr('class', 'bar')
-                            .attr('width', (d)=>{return self.scale_x(d)})
-                            .attr('height', (d)=>{return draw_height / self.model.faceted_bins[self.facet].column[0].bins.length})
-                            .attr('fill', TAN);
-                        
-                        return enter;
-                    },
-                    function(update){
-                        update.select('.bar')
-                            .transition()
-                            .attr('width', (d)=>{return self.scale_x(d)});
-                    },
-                    function(exit){
-                        exit.remove();
-                    }
-                )
-        }
-    }
+    }  
 }
 
 class CategoricalBarChart{
@@ -1661,80 +1688,83 @@ class CategoricalBarChart{
         let update_targets = [`${this.facet}_heatmap`, `${this.facet}_right_histogram`, `${this.facet}_bottom_histogram`, `${this.facet}_legend`];
 
         const self = this;
-        
-        if(this.orientation == 'bottom'){
-            //make sure re-renders to unfiltered data updates happen
-            // only when the mouse leaves the histogram
-            this.view.on('mouseleave', function(e,d){
-                self.model.filter_data_by_category([], self.facet, this.id_token, update_targets);
-            });
 
-            this.view.selectAll('.column')
-                    .data(top_n_cats)
+        if(self.model.row_major_counts[self.facet].length > 2){
+
+            if(this.orientation == 'bottom'){
+                //make sure re-renders to unfiltered data updates happen
+                // only when the mouse leaves the histogram
+                this.view.on('mouseleave', function(e,d){
+                    self.model.filter_data_by_category([], self.facet, this.id_token, update_targets);
+                });
+
+                this.view.selectAll('.column')
+                        .data(top_n_cats)
+                        .join(
+                            function(enter){
+                                let col = enter.append('g')
+                                                .attr('class', 'column')
+                                                .attr('transform', (d, i)=>{
+                                                    if(self.scale_x(d.key)){ 
+                                                        return `translate(${self.scale_x(d.key)}, ${CAT_HISTOGRAM_LAYOUT.inner_padding})`
+                                                    }
+                                                    return `translate(${0}, ${CAT_HISTOGRAM_LAYOUT.inner_padding})`
+                                                });
+
+                                col.append('rect')
+                                    .attr('class', 'bar')
+                                    .attr('height', (d)=>{return self.scale_y(d.val)})
+                                    // .attr('width', (d)=>{return ((HISTOGRAM_LAYOUT.width - 2*HISTOGRAM_LAYOUT.inner_padding) / faceted_bins[d.facet].x.length)})
+                                    .attr('width', (self.width-2*CAT_HISTOGRAM_LAYOUT.inner_padding)/self.n)
+                                    .attr('fill', TAN)
+                                    .attr(`transform`, (d)=>{return `translate(${0}, ${(CAT_HISTOGRAM_LAYOUT.height- self.scale_y(d.val))-2*CAT_HISTOGRAM_LAYOUT.inner_padding})`})
+                                    .on('mouseover', function (e,d){
+                                        d3.select(this).attr('fill', RICH_TAN);
+                                        self.model.filter_data_by_category([d.key], self.facet, self.id_token, update_targets);
+                                        // self.model.update_row_counts(self.token, `${self.facet}_right_histogram`, self.facet, []);
+                                    })
+                                    .on('mouseout', function (e,d){
+                                        if(!self.model.is_category_pinned(self.facet, d.key)){
+                                            d3.select(this).attr('fill', TAN);
+                                        }
+
+                                    })
+                                    .on('click', function(e,d){
+                                        self.model.pin_unpin_clicked_category(self.id_token, self.facet, d.key);
+                                    });
+                            }
+                        );
+            }
+
+
+            if(this.orientation == "right"){
+                this.view
+                    .selectAll('.row')
+                    .data(self.model.row_major_counts[self.facet])
                     .join(
                         function(enter){
-                            let col = enter.append('g')
-                                            .attr('class', 'column')
-                                            .attr('transform', (d, i)=>{
-                                                if(self.scale_x(d.key)){ 
-                                                    return `translate(${self.scale_x(d.key)}, ${CAT_HISTOGRAM_LAYOUT.inner_padding})`
-                                                }
-                                                return `translate(${0}, ${CAT_HISTOGRAM_LAYOUT.inner_padding})`
-                                            });
+                            let row = enter.append('g')
+                                            .attr('class', 'row')
+                                            .attr('transform', (d, i)=>{return `translate(${VERT_HISTOGRAM_LAYOUT.inner_padding},${self.scale_y(i)})`});
 
-                            col.append('rect')
+                            row.append('rect')
                                 .attr('class', 'bar')
-                                .attr('height', (d)=>{return self.scale_y(d.val)})
-                                // .attr('width', (d)=>{return ((HISTOGRAM_LAYOUT.width - 2*HISTOGRAM_LAYOUT.inner_padding) / faceted_bins[d.facet].x.length)})
-                                .attr('width', (self.width-2*CAT_HISTOGRAM_LAYOUT.inner_padding)/self.n)
-                                .attr('fill', TAN)
-                                .attr(`transform`, (d)=>{return `translate(${0}, ${(CAT_HISTOGRAM_LAYOUT.height- self.scale_y(d.val))-2*CAT_HISTOGRAM_LAYOUT.inner_padding})`})
-                                .on('mouseover', function (e,d){
-                                    d3.select(this).attr('fill', RICH_TAN);
-                                    self.model.filter_data_by_category([d.key], self.facet, self.id_token, update_targets);
-                                    // self.model.update_row_counts(self.token, `${self.facet}_right_histogram`, self.facet, []);
-                                })
-                                .on('mouseout', function (e,d){
-                                    if(!self.model.is_category_pinned(self.facet, d.key)){
-                                        d3.select(this).attr('fill', TAN);
-                                    }
-
-                                })
-                                .on('click', function(e,d){
-                                    self.model.pin_unpin_clicked_category(self.id_token, self.facet, d.key);
-                                });
+                                .attr('width', (d)=>{return self.scale_x(d)})
+                                .attr('height', (d)=>{return draw_height / self.model.faceted_bins[self.facet].column[0].bins.length})
+                                .attr('fill', '#aabbdd');
+                            
+                            return enter;
+                        },
+                        function(update){
+                            update.select('.bar')
+                                .transition()
+                                .attr('width', (d)=>{return self.scale_x(d)});
+                        },
+                        function(exit){
+                            exit.remove();
                         }
-                    );
-        }
-
-
-        if(this.orientation == "right"){
-            this.view
-                .selectAll('.row')
-                .data(self.model.row_major_counts[self.facet])
-                .join(
-                    function(enter){
-                        let row = enter.append('g')
-                                        .attr('class', 'row')
-                                        .attr('transform', (d, i)=>{return `translate(${VERT_HISTOGRAM_LAYOUT.inner_padding},${self.scale_y(i)})`});
-
-                        row.append('rect')
-                            .attr('class', 'bar')
-                            .attr('width', (d)=>{return self.scale_x(d)})
-                            .attr('height', (d)=>{return draw_height / self.model.faceted_bins[self.facet].column[0].bins.length})
-                            .attr('fill', '#aabbdd');
-                        
-                        return enter;
-                    },
-                    function(update){
-                        update.select('.bar')
-                            .transition()
-                            .attr('width', (d)=>{return self.scale_x(d)});
-                    },
-                    function(exit){
-                        exit.remove();
-                    }
-                )
+                    )
+            }
         }
     }
 }
@@ -1879,8 +1909,17 @@ class Validator{
      * @returns {boolean} - True if the string is a valid date, false otherwise.
      */
     isValidDate(dateString) {
-        const date = new Date(dateString);
-        return !isNaN(date.getTime());
+        const date_time = new Date(dateString);
+        console.log("AAAAA", date_time.getTime());
+        return !isNaN(date_time.getTime());
+    }
+
+    validate_data_loaded(){
+        if(Object.keys(this.data).length == 0){
+            return [{key:'data', value:'data', message:"No data detected. Please load data into <objectname>.vis_data"}];
+        }
+
+        return [];
     }
 
 
@@ -1912,10 +1951,13 @@ class Validator{
 
     validate(){
         let errors = [];
-
-        errors = this.validate_config_fields();
+         
+        errors = this.validate_data_loaded();
+        errors = errors.concat(this.validate_config_fields());
         errors = errors.concat(this.validate_var_specs());
 
+        //CONDITION WHERE ALL OTHER PARTS OF DATA ARE VALID
+        // SO THERE WILL NOT BE OBJECT/KEY ACCESS ERRORS
         if(errors.length <= 0){
             errors = this.validate_variable_semantics();
         }
@@ -1980,12 +2022,13 @@ class Validator{
                 let test_val = this.data[this.var_specs[key]][Object.keys(this.data[this.var_specs[key]])[0]];
                 if (typeof test_val !== 'number'){
                     if(typeof test_val == 'string'){
-                        if(!isValidDate(test_val)){
-                            incorrect.push({ key: key, value: this.var_specs[key], message: 'The x-axis only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
+                        if(!this.isValidDate(test_val)){
+                            incorrect.push({ key: key, value: this.var_specs[key], message: 'The x-axis aaaaa only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
                         }
                     }
-
-                    incorrect.push({ key: key, value: this.var_specs[key], message: 'The x-axis only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
+                    else {
+                        incorrect.push({ key: key, value: this.var_specs[key], message: 'The x-axis bbbbbb only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
+                    }
                 }
             }
             else if (key === 'y') {
@@ -2065,13 +2108,9 @@ function render({model, el}){
     let validator = new Validator(svg, data, var_specs);
     let is_valid = validator.validate();
 
-    if(Object.keys(data).length == 0){
-        first_text = svg.append('text').text('No data detected. Please load data into <objectname>.vis_data').attr('x', 15).attr('y', 15);
-    } else{
-        if(is_valid){
-            let jsmodel = new JSModel(data, var_specs, model);
-            create_views(jsmodel, svg);
-        }
+    if(is_valid){
+        let jsmodel = new JSModel(data, var_specs, model);
+        create_views(jsmodel, svg);
     }
 
     model.on("change:vis_configs", ()=>{
