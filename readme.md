@@ -67,13 +67,14 @@ gp.vis_configs = {
         'facet_by': 'partition'
 }
 ```
-Configuration Descriptions
-`x`: Name of the column in the dataframe which will be shown on the x axis of Guidepost's subcharts.
-`y`: Name of the column in the dataframe which will be shown on the y axis of Guidepost's subcharts.
-`color`: Name of the column in the dataframe which will be shown by the darkness of each square's color.
-`color_agg`: The aggregation method used to determine the color. Can be: 'avg', 'variance', 'std', 'sum', or 'median'
-`categorical`: Name of the column containing categorical data values which will be shown on a bar chart associated with each group of the data.
-`facet_by`: Name of the column containing categorical data values which dictate the highest level grouping of the data. Dictates how many sub charts are produced in the visualization. 
+#### Configuration Descriptions:
+
+- `x`: Name of the column in the dataframe which will be shown on the x axis of Guidepost's subcharts.
+- `y`: Name of the column in the dataframe which will be shown on the y axis of Guidepost's subcharts.
+- `color`: Name of the column in the dataframe which will be shown by the darkness of each square's color.
+- `color_agg`: The aggregation method used to determine the color. Can be: 'avg', 'variance', 'std', 'sum', or 'median'
+- `categorical`: Name of the column containing categorical data values which will be shown on a bar chart associated with each group of the data.
+- `facet_by`: Name of the column containing categorical data values which dictate the highest level grouping of the data. Dictates how many sub charts are produced in the visualization. 
 
 See the [Vis Configs Section](#vis_configs) for more details on datatype restrictions for each configuration.
 
@@ -86,10 +87,10 @@ Run the above command in a Jupyter notebook cell to start the visualization.
 
 Here is an example of what the viusalization will look like:
 
-![Image of the guidepost visualization. Annotations label various parts of the visualization: 'Data Grouping Name', 'Color by Categorical Variable', 'Bar Chart (Filter on Click)', 'Current Selection of Records for Export'](figs/guidepost_tutorial_info.png)
+![Image of the guidepost visualization. Annotations label various parts of the visualization: 'Data Grouping Name', 'Color by Categorical Variable', 'Bar Chart (Filter on Click)', 'Current Selection of Records for Export'](https://i.ibb.co/6RknF9xT/guidepost-tutorial-info.png)
+
 
 Here we explain some elements of the visualization:
-
 
 #### `Data Grouping Name`: 
 This is name of the high level groups which are dictated by the `facet_by` configuration. If your data only logically contains one group, adding a synthetic column is advised and specifying that column name for the `facet_by` cofiguration.
@@ -135,6 +136,12 @@ Below is an example of the kind of data Guidepost works with:
 ---
 
 ## API Reference
+
+### `load_data`
+- **Description**: Loads a pandas dataframe into the guidepost system for visualizaiton. Will report data dropped from the dataframe if it contains NaNs, `timedeltas`, `arrays` in cells, or other invalid values. 
+- **Arguments**:
+  - `in_df` (Pandas Dataframe): The dataframe containing data to be visualized.
+  - `supress_warnings` (Boolean): Specifies whether to suppress warnings when loading data. Defaults to `False` 
 
 ### `vis_data`
 - **Description**: Holds the vis data to passed to the visualization. Updates to this variable will automatically update the visualization.
