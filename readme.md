@@ -87,7 +87,7 @@ Run the above command in a Jupyter notebook cell to start the visualization.
 
 Here is an example of what the viusalization will look like:
 
-![Image of the guidepost visualization. Annotations label various parts of the visualization: 'Data Grouping Name', 'Color by Categorical Variable', 'Bar Chart (Filter on Click)', 'Current Selection of Records for Export'](https://i.ibb.co/6RknF9xT/guidepost-tutorial-info.png)
+![Image of the guidepost visualization. Annotations label various parts of the visualization: 'Data Grouping Name', 'Color by Categorical Variable', 'Bar Chart (Filter on Click)', 'Current Selection of Records for Export'](https://i.postimg.cc/vTDMX2b3/temp-Image-MVb5ui.avif)
 
 
 Here we explain some elements of the visualization:
