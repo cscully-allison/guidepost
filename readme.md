@@ -33,7 +33,15 @@ gp = Guidepost()
 ```
 
 ### 2. Load Your Data
-Guidepost supports input data in CSV or Pandas DataFrame format. At least three numerical and 2 categorical columns are required. Datetime columns are also supported
+
+
+```python
+import pandas as pd
+jobs_data = pd.read_parquet("data/jobs_data.parquet")
+gp.load_data(jobs_data)
+```
+
+Guidepost supports input data in CSV or Pandas DataFrame format. At least three numerical and 2 categorical columns are required. Datetime columns are also supported.
 
 Here is a sample table containg jobs-related data from a superocmputer scheduling system:
 
@@ -41,12 +49,6 @@ Here is a sample table containg jobs-related data from a superocmputer schedulin
 |--------|-----------------------------|----------------|-----------------|-----------|------------|--------|
 | 12345  | 2023-11-01 21:19:33         |5.2             | 10              | short     | Complete   | User1  |
 | 12346  | 2023-11-01 21:20:01         |12.0            | 20              | long      | Running    | User2  |
-
-```python
-import pandas as pd
-jobs_data = pd.read_parquet("data/jobs_data.parquet")
-gp.load_data(jobs_data)
-```
 
 The `load_data()` function will format your data for json serialization and will update the visualization if it has already been run. This function will report out any columns or rows which are dropped from the original dataset due to conainting `null`/`NaN`/`None` values or unallowed datatypes like `timedelta`s.
 
@@ -96,11 +98,12 @@ Records can be selected for export from the visualization by brushing over the r
 
 
 ### 5. Retrieve Selections from Visualization
-After selecting data by brushing over either the bottom or right histograms associated with a subchart, you can retrieve selected data using the following command:
 
 ```python
 df = gp.retrieve_selected_data()
 ```
+
+After selecting data by brushing over either the bottom or right histograms associated with a subchart, you can retrieve selected data using the above method.
 
 This will return a pandas dataframe containing all your subselected rows from the original dataset.
 
