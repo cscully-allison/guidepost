@@ -7,7 +7,7 @@ import json
 import os
 
 class Guidepost(anywidget.AnyWidget):
-    _esm = os.path.join("../guidepost/guidepost.js")
+    _esm = os.path.join(os.path.dirname(__file__), "guidepost.js")
     vis_data = traitlets.Dict({}).tag(sync=True)
     vis_configs = traitlets.Dict({}).tag(sync=True)
     selected_records = traitlets.Unicode("[]").tag(sync=True)
@@ -20,12 +20,13 @@ class Guidepost(anywidget.AnyWidget):
             Drop NAs, remove time deltas, report warnings
         '''
 
-        in_df.insert(0, 'gp_idx', range(0, len(in_df)))
-        self.cached_records_df = in_df
+        in_cpy = in_df.copy()
+        in_cpy.insert(0, 'gp_idx', range(0, len(in_cpy)))
+        self.cached_records_df = in_cpy
 
         _warn_skips = (os.path.dirname('.'),)
-        original_cols = in_df.columns
-        o_df = in_df.dropna(axis=1, how='all')
+        original_cols = in_cpy.columns
+        o_df = in_cpy.dropna(axis=1, how='all')
         
         #remove columns with only nans
         col_diff = original_cols.difference(o_df.columns)
