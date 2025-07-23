@@ -5,7 +5,7 @@ const FACET_LAYOUT = {
 }
 
 const OVERVIEW_LAYOUT = {
-    width: 1100,
+    width: 1000,
     height: 300,
     outer_margin: 10,
     inner_padding: 30
@@ -377,8 +377,11 @@ class JSModel{
         let current_bins = this.faceted_bins[fac].column;
         let sum_stats = this.faceted_sum_stats[fac];
 
+        console.log("CALC BOX METRICS: ", fac, current_bins, x_axis_thresholds, y_axis_thresholds);
+
         // Iterate over the columns that divide the data along the x axis
         for(let bin in current_bins){
+
             let filtered_bin;
             
             //Do not filter if no filter is specified currently
@@ -503,7 +506,7 @@ class JSModel{
                 // just do linerats if not
                 if(this.is_more_than_n_orders_of_magnitude(sum_stats.x.min, sum_stats.x.max, 3)){
                     this.scale_types[fac].x.log = true;
-                    this.x_axis_thresholds[fac] = this.logScale(this.log_values_floor, sum_stats.x.max, num_cols);
+                    this.x_axis_thresholds[fac] = this.logScale(this.log_values_floor, sum_stats.x.max+1, num_cols-1);
                     this.faceted_bins[fac].column = d3.bin()
                                                     .value(d => d[this.vars.x])
                                                     .domain([this.log_values_floor, sum_stats.x.max])
@@ -512,7 +515,7 @@ class JSModel{
                 }
                 else{
                     this.scale_types[fac].x.linear = true;
-                    this.x_axis_thresholds[fac] = this.linearScale(sum_stats.x.min, sum_stats.x.max, num_rows);
+                    this.x_axis_thresholds[fac] = this.linearScale(sum_stats.x.min, sum_stats.x.max+1, num_cols-1);
                     this.faceted_bins[fac].column = d3.bin()
                                                     .value(d => d[this.vars.x])
                                                     .domain([sum_stats.x.min, sum_stats.x.max])
@@ -902,7 +905,6 @@ class Heatmap{
                             // .range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.width-OVERVIEW_LAYOUT.inner_padding]);
 
         //Determine if y scale is log or linear based on input data
-        console.log(this.model.scale_types[this.facet]);
         if(this.model.scale_types[this.facet].y.log){
             this.scale_y = d3.scaleLog()
                             .domain([this.model.log_values_floor, sum_stats.y.max])
@@ -1364,10 +1366,16 @@ class Histogram{
             let y_offset = Y_VARIABLE_OFFSET + OVERVIEW_LAYOUT.height + HISTOGRAM_LAYOUT.outer_margin;
 
 
+
             //create the histograms
             let h_hist = this.parent.append('g')
                     .attr('class', 'faceted-h-hist')
                     .attr('transform', `translate(${x_offset},${y_offset})`);
+                    h_hist.append('rect')
+                        .attr('width', this.width - 2*HISTOGRAM_LAYOUT.inner_padding)
+                        .attr('height', this.height - HISTOGRAM_LAYOUT.inner_padding)
+                        .attr('fill', 'rgba(240,240,240)')
+                        .attr('transform', `translate(${HISTOGRAM_LAYOUT.inner_padding},${0})`);;
 
             h_hist.append('g')
                     .attr('class', 'left-axis')
@@ -1389,7 +1397,12 @@ class Histogram{
                     .attr('text-anchor', 'middle')
                     .attr('transform', `translate(${this.width/2},${this.height})`);
 
+            
+            h_hist.append("g")
+                .attr('class', 'bars');
+
             this.view = h_hist;
+        
 
             this.brush = d3.brushX()
                 .extent([[OVERVIEW_LAYOUT.inner_padding, 0], [OVERVIEW_LAYOUT.width - OVERVIEW_LAYOUT.inner_padding, this.height-HISTOGRAM_LAYOUT.inner_padding]])
@@ -1400,7 +1413,7 @@ class Histogram{
                             select = selection.map(self.scale_x.scale.invert, self.scale_x.scale).map(d3.utcDay.round);
                         }
                         if(self.model.scale_types[self.facet]['x']['log'] || self.model.scale_types[self.facet]['x']['linear']){
-                            select = selection.map(self.scale_x.scale.invert, self.scale_x.scale).map((d)=>{return Math.floor(d+1)});
+                            select = selection.map(self.scale_x.scale.invert, self.scale_x.scale).map((d)=>{return d});
                         }
                         console.log(select);
                     }else{
@@ -1410,46 +1423,62 @@ class Histogram{
                 });
 
             h_hist.append("g")
+                .attr('class', 'h-brush')
                 .call(this.brush);
         } 
         
 
         else if(this.orientation == 'right'){
 
-            let x_offset = X_VARIABLE_OFFSET + OVERVIEW_LAYOUT.width;
+            let x_offset = X_VARIABLE_OFFSET + OVERVIEW_LAYOUT.width - 5;
             let y_offset = Y_VARIABLE_OFFSET + VERT_HISTOGRAM_LAYOUT.outer_margin;
 
             let v_hist = this.parent.append('g')
                 .attr('class', 'faceted-v-hist')
                 .attr('transform', `translate(${x_offset},${y_offset})`);
 
+            v_hist.append('rect')
+                    .attr('width', this.width)
+                    .attr('height', this.height - 2*HISTOGRAM_LAYOUT.inner_padding)
+                    .attr('fill', 'rgba(240,240,240)')
+                    .attr('transform', `translate(${0},${HISTOGRAM_LAYOUT.inner_padding})`);
+;
+                
             v_hist.append('g')
                 .attr('class', 'bot-axis')
                 .call(d3.axisBottom().scale(this.scale_x).ticks(5))  
                 .attr('transform', `translate(${VERT_HISTOGRAM_LAYOUT.inner_padding*4},${VERT_HISTOGRAM_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding})`);
 
-            // v_hist.append('g')
-            //         .attr('class', 'left-axis')
-            //         .call(d3.axisLeft().scale(this.scale_y_inverse))  
-            //         .attr('transform', `translate(${VERT_HISTOGRAM_LAYOUT.inner_padding},${0})`);
+            v_hist.append('g')
+                    .attr('class', 'left-axis')
+                    .call(d3.axisRight().scale(this.axis_scale_y_inverse))  
+                    .attr('transform', `translate(${self.width-VERT_HISTOGRAM_LAYOUT.inner_padding},${0})`);
 
             this.brush = d3.brushY()
                 .extent([[0, HISTOGRAM_LAYOUT.inner_padding], [this.width, this.height - OVERVIEW_LAYOUT.inner_padding]])
                 .on("end", function({selection}){
                     let select;
                     if(selection){
-                        select = selection.map(self.scale_y.invert, self.scale_y).map((d)=>{return Math.floor(d+1)})
+                        select = selection.map(self.scale_y.invert, self.scale_y).map((d)=>{return d+0.1})
                     }else{
                         select = [];
                     }
                     self.model.update_subselected_data(self.facet, [`${self.facet}_heatmap`, `${self.facet}_legend`], select, "y");
                 });
 
+            
             v_hist.append("g")
+                .attr('class', 'bars');
+
+            v_hist.append("g")
+                .attr('class', 'v-brush')
                 .call(this.brush);
 
             this.view = v_hist;
         }
+
+
+
     }
 
     /**
@@ -1476,13 +1505,41 @@ class Histogram{
         
         else if(this.orientation == 'right'){
 
-            this.scale_y = d3.scaleLinear()
+            if(this.model.is_more_than_n_orders_of_magnitude(0, Math.max(...this.model.row_major_counts[this.facet]), 3)){
+                let local_log_floor = 0.3
+                this.scale_x = d3.scaleLog()
+                                    .domain([local_log_floor, Math.max(...this.model.row_major_counts[this.facet])])
+                                    .range([0, VERT_HISTOGRAM_LAYOUT.width - VERT_HISTOGRAM_LAYOUT.inner_padding]);
+            }else{
+                this.scale_x = d3.scaleLinear() 
+                                    .domain([0, Math.max(...this.model.row_major_counts[this.facet])])
+                                    .range([0, VERT_HISTOGRAM_LAYOUT.width - VERT_HISTOGRAM_LAYOUT.inner_padding]);
+            }
+
+
+        if(this.model.scale_types[this.facet].y.log){
+            this.axis_scale_y = d3.scaleLog()
+                            .domain([this.model.log_values_floor, sum_stats.y.max])
+                            .range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding]);
+
+            this.axis_scale_y_inverse = d3.scaleLog()
+                            .domain([sum_stats.y.max, this.model.log_values_floor])
+                            .range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding]);
+        }
+        else if(this.model.scale_types[this.facet].y.linear){
+            this.axis_scale_y = d3.scaleLinear()
+                        .domain([sum_stats.y.min, sum_stats.y.max])
+                        .range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding]);
+
+            this.axis_scale_y_inverse = d3.scaleLinear()
+                        .domain([sum_stats.y.max, sum_stats.y.min])
+                        .range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding]);
+        }
+
+        this.scale_y = d3.scaleLinear()
                 .domain([num_rows-2, -1])
                 .range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding]);
 
-            this.scale_x = d3.scaleLinear() 
-                .domain([0, Math.max(...this.model.row_major_counts[this.facet])])
-                .range([0, VERT_HISTOGRAM_LAYOUT.width - VERT_HISTOGRAM_LAYOUT.inner_padding]);
         }
     }
 
@@ -1492,10 +1549,11 @@ class Histogram{
     render(){
         const self = this;
         let bar_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
-
+        let bar_layer = this.view.select('.bars');
+    
         if(self.model.row_major_counts[self.facet].length > 2){
             if(this.orientation == 'bottom'){
-                this.view.selectAll('.column')
+                bar_layer.selectAll('.column')
                         .data(self.model.faceted_bins[self.facet].column, function(d){return this.id} )
                         .join(
                             function(enter){
@@ -1524,8 +1582,7 @@ class Histogram{
             }
 
             if(this.orientation == "right"){
-                this.view
-                    .selectAll('.row')
+                bar_layer.selectAll('.row')
                     .data(self.model.row_major_counts[self.facet])
                     .join(
                         function(enter){
@@ -1544,7 +1601,10 @@ class Histogram{
                         function(update){
                             update.select('.bar')
                                 .transition()
-                                .attr('width', (d)=>{return self.scale_x(d)});
+                                .attr('width', (d)=>{
+
+                                        return self.scale_x(d) ? self.scale_x(d) : 0;
+                                    });
                         },
                         function(exit){
                             exit.remove();
@@ -1586,8 +1646,8 @@ class CategoricalBarChart{
             
             //create the histograms
 
-            let x_offset = X_VARIABLE_OFFSET + HISTOGRAM_LAYOUT.outer_margin + OVERVIEW_LAYOUT.width;
-            let y_offset = Y_VARIABLE_OFFSET + OVERVIEW_LAYOUT.height + HISTOGRAM_LAYOUT.outer_margin;
+            let x_offset = X_VARIABLE_OFFSET + OVERVIEW_LAYOUT.width;
+            let y_offset = Y_VARIABLE_OFFSET + HISTOGRAM_LAYOUT.outer_margin + OVERVIEW_LAYOUT.height ;
 
             let h_hist = this.parent.append('g')
                     .attr('class', 'faceted-h-hist')
@@ -1648,15 +1708,31 @@ class CategoricalBarChart{
     setup_scales(){
         this.n = Math.min(this.model.categorical_bins[this.facet].length, this.n);
         let top_n_cats = this.model.categorical_bins[this.facet].slice(0,this.n);
+        
+        this.max_bar_width = 30;
+        this.drawable_width = (this.width-2*CAT_HISTOGRAM_LAYOUT.inner_padding);
+        this.calc_bar_width = Math.min(this.max_bar_width, this.drawable_width/this.n);
 
         if(this.orientation == 'bottom'){
-            this.scale_y = d3.scaleLinear()
-                                .domain([0, top_n_cats[0].val])
-                                .range([0, this.height - CAT_HISTOGRAM_LAYOUT.inner_padding]);
-            
-            this.scale_y_inverse = d3.scaleLinear()
-                                        .domain([top_n_cats[0].val, 0])
-                                        .range([0, this.height - CAT_HISTOGRAM_LAYOUT.inner_padding]);
+            if(this.model.is_more_than_n_orders_of_magnitude(0, top_n_cats[0].val, 3)){
+                let local_log_floor = 0.3
+                this.scale_y = d3.scaleLog()
+                                    .domain([local_log_floor, top_n_cats[0].val])
+                                    .range([0, this.height - CAT_HISTOGRAM_LAYOUT.inner_padding]);
+                
+                this.scale_y_inverse = d3.scaleLog()
+                                            .domain([top_n_cats[0].val, local_log_floor])
+                                            .range([0, this.height - CAT_HISTOGRAM_LAYOUT.inner_padding]);
+            }
+            else{
+                this.scale_y = d3.scaleLinear()
+                                    .domain([0, top_n_cats[0].val])
+                                    .range([0, this.height - CAT_HISTOGRAM_LAYOUT.inner_padding]);
+                
+                this.scale_y_inverse = d3.scaleLinear()
+                                            .domain([top_n_cats[0].val, 0])
+                                            .range([0, this.height - CAT_HISTOGRAM_LAYOUT.inner_padding]);
+            }
 
             //references OVERVIEW LAYOUT SIZES
             //BE CAREFUL
@@ -1664,7 +1740,8 @@ class CategoricalBarChart{
                             .domain(top_n_cats.map((obj)=>{
                                 return obj.key;
                             }))
-                            .range([CAT_HISTOGRAM_LAYOUT.inner_padding, this.width - CAT_HISTOGRAM_LAYOUT.inner_padding]);
+                            .range([CAT_HISTOGRAM_LAYOUT.inner_padding, this.width - CAT_HISTOGRAM_LAYOUT.inner_padding])
+                            .padding(0.1);
         }
         
         else if(this.orientation == 'right'){
@@ -1684,10 +1761,9 @@ class CategoricalBarChart{
      */
     render(){
 
+        const self = this;
         let top_n_cats = this.model.categorical_bins[this.facet].slice(0,this.n);
         let update_targets = [`${this.facet}_heatmap`, `${this.facet}_right_histogram`, `${this.facet}_bottom_histogram`, `${this.facet}_legend`];
-
-        const self = this;
 
         if(self.model.row_major_counts[self.facet].length > 2){
 
@@ -1705,17 +1781,18 @@ class CategoricalBarChart{
                                 let col = enter.append('g')
                                                 .attr('class', 'column')
                                                 .attr('transform', (d, i)=>{
-                                                    if(self.scale_x(d.key)){ 
-                                                        return `translate(${self.scale_x(d.key)}, ${CAT_HISTOGRAM_LAYOUT.inner_padding})`
-                                                    }
-                                                    return `translate(${0}, ${CAT_HISTOGRAM_LAYOUT.inner_padding})`
+                                                        const tickPos = self.scale_x(d.key);
+                                                        const bandWidth = self.scale_x.bandwidth();
+                                                        // Center bar if calc_bar_width < bandWidth
+                                                        const offset = (bandWidth - self.calc_bar_width) / 2;
+                                                        return `translate(${tickPos + offset}, ${CAT_HISTOGRAM_LAYOUT.inner_padding})`;
                                                 });
 
                                 col.append('rect')
                                     .attr('class', 'bar')
                                     .attr('height', (d)=>{return self.scale_y(d.val)})
                                     // .attr('width', (d)=>{return ((HISTOGRAM_LAYOUT.width - 2*HISTOGRAM_LAYOUT.inner_padding) / faceted_bins[d.facet].x.length)})
-                                    .attr('width', (self.width-2*CAT_HISTOGRAM_LAYOUT.inner_padding)/self.n)
+                                    .attr('width', self.calc_bar_width)
                                     .attr('fill', TAN)
                                     .attr(`transform`, (d)=>{return `translate(${0}, ${(CAT_HISTOGRAM_LAYOUT.height- self.scale_y(d.val))-2*CAT_HISTOGRAM_LAYOUT.inner_padding})`})
                                     .on('mouseover', function (e,d){

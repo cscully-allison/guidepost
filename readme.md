@@ -184,7 +184,7 @@ Guidepost is licensed under the MIT License. See the `LICENSE` file for details.
 
 ## Acknowledgments
 
-Guidepost was developed under the auspices and with funding provided by the National Renewable Energy Laboratory (NREL).
+Guidepost was developed under the auspices and with funding provided by the National Renewable Energy Laboratory (NREL), the National Science Foundation under NSF IIS-1844573 and IIS-2324465, and the Department of Energy under DE-SC0022044 and DE-SC0024635.
 
 ---
 
