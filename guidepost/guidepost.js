@@ -1,4 +1,7 @@
 import * as d3 from "https://esm.sh/d3@7";
+// import * as d3 from "d3";
+
+
 //layout vars
 const FACET_LAYOUT = {
     outer_margin: 30
@@ -53,6 +56,8 @@ const num_rows = 50;
 const num_cols = 150;
 
 const MIN_BAR_WIDTH = 45;
+
+const SHARED_X_SCALE = false
 
 // COLORS
 const BLUE = 'rgba(32, 61, 192, 0.7)';
@@ -377,7 +382,7 @@ class JSModel{
         let current_bins = this.faceted_bins[fac].column;
         let sum_stats = this.faceted_sum_stats[fac];
 
-        console.log("CALC BOX METRICS: ", fac, current_bins, x_axis_thresholds, y_axis_thresholds);
+        // console.log("CALC BOX METRICS: ", fac, current_bins, x_axis_thresholds, y_axis_thresholds);
 
         // Iterate over the columns that divide the data along the x axis
         for(let bin in current_bins){
@@ -403,34 +408,72 @@ class JSModel{
             temp_box_stats.bins = [];
             
             //box bins for this column
-            let row_bins = d3.bin()
-                        .value(d => d[this.vars.y])
-                        .domain([sum_stats.y.min, sum_stats.y.max]).thresholds(y_axis_thresholds)(filtered_bin);
-
-
-            //clamps down last bin(s) if more are produced than desired
-            // idk why but d3 produces too many bins sometimes
-            if(row_bins.length > y_axis_thresholds.length-1){
-                let diff = (y_axis_thresholds.length-1)-row_bins.length;
-                let head = row_bins.slice(0, diff);
-
-                for(let i = row_bins.length-1; i > y_axis_thresholds.length-2; i--){
-                    head[head.length-1] = head[head.length-1].concat(row_bins[i]);
+            function binValues(values, thresholds, accessor) {
+                const bins = [];
+                // Create an empty bin for each interval between consecutive thresholds
+                for (let i = 0; i < thresholds.length - 1; i++) {
+                    bins.push([]);
                 }
-                row_bins = head;
+                // Place each value in the appropriate bin
+                values.forEach(d => {
+                    const val = accessor(d);
+                    for (let i = 0; i < thresholds.length - 1; i++) {
+                        // For the last bin, include values equal to the upper bound
+                        if (val >= thresholds[i] && (i === thresholds.length - 2 || val < thresholds[i + 1])) {
+                            bins[i].push(d);
+                            break;
+                        }
+                    }
+                });
+                return bins;
             }
 
-            //load individual boxes of values with summary statistics describing them
-            for(let index in row_bins){
-                let row = row_bins[index];
-                let sum_stats = this.get_summary_stats(row, this.vars.color);
-                sum_stats.values = row;
-                sum_stats['std_ratio'] = sum_stats.std/this.faceted_sum_stats[fac].color.std;
-                sum_stats.threshold = y_axis_thresholds[index];
-                temp_box_stats.bins.push(sum_stats);
-                this.color_scale_range[0] = Math.min(this.color_scale_range[0], sum_stats[this.vars.color_agg]);
-                this.color_scale_range[1] = Math.max(this.color_scale_range[1], sum_stats[this.vars.color_agg]);
-            }
+            const customBins = binValues(filtered_bin, y_axis_thresholds, d => d[this.vars.y]);
+
+            // Process each bin's summary statistics and update color scale range
+            temp_box_stats.bins = customBins.map((bin, index) => {
+                const stats = this.get_summary_stats(bin, this.vars.color);
+                stats.values = bin;
+                stats.std_ratio = stats.std / this.faceted_sum_stats[fac].color.std;
+                stats.threshold = y_axis_thresholds[index];
+                this.color_scale_range[0] = Math.min(this.color_scale_range[0], stats[this.vars.color_agg]);
+                this.color_scale_range[1] = Math.max(this.color_scale_range[1], stats[this.vars.color_agg]);
+                return stats;
+            });
+
+
+            // let row_bins = d3.bin()
+            //             .value(d => d[this.vars.y])
+            //             .domain([sum_stats.y.min, sum_stats.y.max]).thresholds(y_axis_thresholds)(filtered_bin);
+
+            // // console.log("ROW BINS BEFORE CLAMP: ", row_bins.length, y_axis_thresholds.length);
+
+
+            // //clamps down last bin(s) if more are produced than desired
+            // // idk why but d3 produces too many bins sometimes
+            // if(row_bins.length > y_axis_thresholds.length-1){
+            //     let diff = (y_axis_thresholds.length-1)-row_bins.length;
+            //     let head = row_bins.slice(0, diff);
+
+            //     for(let i = row_bins.length-1; i > y_axis_thresholds.length-2; i--){
+            //         head[head.length-1] = head[head.length-1].concat(row_bins[i]);
+            //     }
+            //     row_bins = head;
+            // }
+
+            // // console.log("ROW BINS AFTER CLAMP: ", row_bins.length, y_axis_thresholds.length);
+
+            // //load individual boxes of values with summary statistics describing them
+            // for(let index in row_bins){
+            //     let row = row_bins[index];
+            //     let sum_stats = this.get_summary_stats(row, this.vars.color);
+            //     sum_stats.values = row;
+            //     sum_stats['std_ratio'] = sum_stats.std/this.faceted_sum_stats[fac].color.std;
+            //     sum_stats.threshold = y_axis_thresholds[index];
+            //     temp_box_stats.bins.push(sum_stats);
+            //     this.color_scale_range[0] = Math.min(this.color_scale_range[0], sum_stats[this.vars.color_agg]);
+            //     this.color_scale_range[1] = Math.max(this.color_scale_range[1], sum_stats[this.vars.color_agg]);
+            // }
 
             temp_box_stats.column_values = filtered_bin;
             this.faceted_bins[fac].column[bin] = temp_box_stats;
@@ -446,7 +489,21 @@ class JSModel{
      * @returns {Array} - The sanitized and initialized data.
      */
     sanitize_and_intialize_data(data){
-        this.global_sum_stats = {x:{},y:{},color:{}};
+        this.global_sum_stats = {
+            x:{
+                max: Number.MIN_SAFE_INTEGER,
+                min: Number.MAX_SAFE_INTEGER
+            },
+            y:{
+                max: Number.MIN_SAFE_INTEGER,
+                min: Number.MAX_SAFE_INTEGER
+            },
+            color:{
+                max: Number.MIN_SAFE_INTEGER,
+                min: Number.MAX_SAFE_INTEGER
+            },
+            num_cols: 0
+        };
         for(let fac of this.facets){
             //store data about what types of scales x and y are
             this.scale_types[fac] = {
@@ -469,14 +526,6 @@ class JSModel{
             }
 
 
-            // this.global_sum_stats.x.max = Math.max(this.faceted_sum_stats[fac].x.max, this.global_sum_stats.x.max);
-            // this.global_sum_stats.y.max = Math.max(this.faceted_sum_stats[fac].y.max, this.global_sum_stats.y.max);
-            // this.global_sum_stats.color.max = Math.max(this.faceted_sum_stats[fac].color.max, this.global_sum_stats.color.max);
-
-            // this.global_sum_stats.x.min = Math.min(this.faceted_sum_stats[fac].x.min, this.global_sum_stats.x.min);
-            // this.global_sum_stats.y.min = Math.min(this.faceted_sum_stats[fac].y.min, this.global_sum_stats.y.min);
-            // this.global_sum_stats.color.min = Math.min(this.faceted_sum_stats[fac].color.min, this.global_sum_stats.color.max);
-
 
             data[fac] = this.sanitize_data_for_log(data[fac], this.vars.y);
 
@@ -487,9 +536,20 @@ class JSModel{
 
             let sum_stats = this.faceted_sum_stats[fac];
 
+            this.global_sum_stats.x.max = Math.max(this.faceted_sum_stats[fac].x.max, this.global_sum_stats.x.max);
+            this.global_sum_stats.y.max = Math.max(this.faceted_sum_stats[fac].y.max, this.global_sum_stats.y.max);
+            this.global_sum_stats.color.max = Math.max(this.faceted_sum_stats[fac].color.max, this.global_sum_stats.color.max);
+
+            this.global_sum_stats.x.min = Math.min(this.faceted_sum_stats[fac].x.min, this.global_sum_stats.x.min);
+            this.global_sum_stats.y.min = Math.min(this.faceted_sum_stats[fac].y.min, this.global_sum_stats.y.min);
+            this.global_sum_stats.color.min = Math.min(this.faceted_sum_stats[fac].color.min, this.global_sum_stats.color.max);
+
             
             this.faceted_bins[fac] = {}
             
+
+            console.log("SUM STATS: ", fac, sum_stats);
+
             //conditional x axis thresholds based on time or numbers
             // important for calculating the scales which layout the columns
             // of the "heatmap"
@@ -527,9 +587,11 @@ class JSModel{
             if(this.is_more_than_n_orders_of_magnitude(sum_stats.y.min, sum_stats.y.max, 3)){
                 this.scale_types[fac].y.log = true;
                 this.y_axis_thresholds[fac] = this.logScale(this.log_values_floor, sum_stats.y.max, num_rows);
+                console.log("Y AXIS THRESHOLDS LOG: ", fac, this.y_axis_thresholds[fac].length);
             } else {
                 this.scale_types[fac].y.linear = true;
                 this.y_axis_thresholds[fac] = this.linearScale(sum_stats.y.min, sum_stats.y.max, num_rows);
+                console.log("Y AXIS THRESHOLDS LINEAR: ", fac, this.y_axis_thresholds[fac].length);
             }
 
             sum_stats.col_counts = {
@@ -541,6 +603,9 @@ class JSModel{
                 sum_stats.col_counts.max = Math.max(sum_stats.col_counts.max, bin.length);
                 sum_stats.col_counts.min = Math.min(sum_stats.col_counts.min, bin.length);
             }
+
+            
+            this.global_sum_stats.num_cols = Math.max(this.faceted_bins[fac].column.length, this.global_sum_stats.num_cols);
 
             // temporary as Y AXIS IS FIXED LOG
             this.calculate_box_metrics(fac, this.x_axis_thresholds[fac], this.y_axis_thresholds[fac]);
@@ -556,6 +621,7 @@ class JSModel{
 
             this.categorical_bins[fac] = Object.keys(cat_counts).map((key) => { return {"key": key, "val":cat_counts[key]} }).sort((a, b) => b['val'] - a['val']);
         }
+
 
         return data;
     }
@@ -584,8 +650,6 @@ class JSModel{
      * @param {Array} targets - The targets to update.
      */
     filter_data_by_category(filter, facet, source, targets){
-
-        console.log("DATA FILTERS: ", filter)
 
         this.faceted_states[facet].filter = filter;
 
@@ -638,9 +702,6 @@ class JSModel{
 
         }
 
-        console.log(this.brushed_ranges[facet].x_range, this.brushed_ranges[facet].y_range);
-
-
 
         if(this.brushed_ranges[facet].x_range.length != 0){
             for(let bin of this.faceted_bins[facet].column){
@@ -685,8 +746,6 @@ class JSModel{
                 test.push({'idx':d.gp_idx, 'content':d});
             }
         }
-
-        console.log("TEST", test);
 
         this.anywidget_model.set("selected_records", JSON.stringify(return_ids));
         this.anywidget_model.save_changes();
@@ -818,7 +877,7 @@ class SmartScale {
             if(this.model.is_more_than_n_orders_of_magnitude(this.domain[0], this.domain[1], 3)){
                 return d3.scaleLog().domain([this.model.log_values_floor, this.domain[1]]).range(this.range);
             } else {
-                return d3.scaleLinear().domain([this.domain[0], this.domain[1]]).range(this.range);
+                return d3.scaleLinear().domain(this.domain).range(this.range);
             }
         } else {
             throw new Error("Unsupported domain type");
@@ -897,15 +956,23 @@ class Heatmap{
         //                             .domain(this.model.faceted_bins[this.facet].column.keys())
         //                             .range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.width - OVERVIEW_LAYOUT.inner_padding]);
         
-        this.scale_x = new SmartScale([sum_stats.x.min, sum_stats.x.max],
-                                [OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.width-OVERVIEW_LAYOUT.inner_padding],
-                                this.model);
-                            // d3.scaleUtc()
-                            // .domain([new Date(sum_stats.x.min), this.model.addDays(new Date(sum_stats.x.max),1)])
-                            // .range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.width-OVERVIEW_LAYOUT.inner_padding]);
+
+        if(SHARED_X_SCALE){
+            this.scale_x = new SmartScale([this.model.global_sum_stats.x.min, this.model.global_sum_stats.x.max],
+                        [OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.width-OVERVIEW_LAYOUT.inner_padding],
+                        this.model);
+        }
+        else{
+            this.scale_x = new SmartScale([sum_stats.x.min, sum_stats.x.max],
+                        [OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.width-OVERVIEW_LAYOUT.inner_padding],
+                        this.model);
+
+        }
+
 
         //Determine if y scale is log or linear based on input data
         if(this.model.scale_types[this.facet].y.log){
+
             this.scale_y = d3.scaleLog()
                             .domain([this.model.log_values_floor, sum_stats.y.max])
                             .range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding]);
@@ -1045,19 +1112,24 @@ class Heatmap{
      * Raises and zooms on a column slightly
      */
     focus_col(update_element){
-       let self = this;
+        let self = this;
+        let base_width;
+        if(SHARED_X_SCALE){
+            base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.global_sum_stats.num_cols))
+        }
+        else{
+            base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
+        }
+       
+        self.scale_y_blocks.range([OVERVIEW_LAYOUT.inner_padding-(zoom_factor_v/2), OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding + (zoom_factor_v/2)]);
 
-       let base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
-
-       self.scale_y_blocks.range([OVERVIEW_LAYOUT.inner_padding-(zoom_factor_v/2), OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding + (zoom_factor_v/2)]);
-
-       update_element.raise();
-    
-       update_element.selectAll('.row')
-            .attr('width', ()=>{return base_width + zoom_factor_h})
-            .attr('height', ()=>{return ( (OVERVIEW_LAYOUT.height + zoom_factor_v) - 2*OVERVIEW_LAYOUT.inner_padding) / self.model.faceted_bins[self.facet].column[0].bins.length})
-            .attr('y', (d, i)=>{return self.scale_y_blocks(i) - OVERVIEW_LAYOUT.inner_padding});
+        update_element.raise();
         
+        update_element.selectAll('.row')
+                .attr('width', ()=>{return base_width + zoom_factor_h})
+                .attr('height', ()=>{return ( (OVERVIEW_LAYOUT.height + zoom_factor_v) - 2*OVERVIEW_LAYOUT.inner_padding) / self.model.faceted_bins[self.facet].column[0].bins.length})
+                .attr('y', (d, i)=>{return self.scale_y_blocks(i) - OVERVIEW_LAYOUT.inner_padding});
+            
         update_element.selectAll('.col-bg')
             .attr('width', ()=>{return base_width + zoom_factor_h})
             .attr('height', ()=>{return ( (OVERVIEW_LAYOUT.height + zoom_factor_v) - 2*OVERVIEW_LAYOUT.inner_padding)})
@@ -1077,9 +1149,14 @@ class Heatmap{
      */
     unfocus_col(update_element){
         let self = this;
-
-
-        let base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
+        let base_width;
+        if(SHARED_X_SCALE){
+            base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.global_sum_stats.num_cols))
+        }
+        else{
+            base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
+        }
+       
         self.scale_y_blocks.range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding]);
 
 
@@ -1132,9 +1209,16 @@ class Heatmap{
     render(){
         const self = this;
 
-        console.log(this.model.faceted_bins[this.facet].column);
 
-        let base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
+        let base_width = 0;
+        if(SHARED_X_SCALE){
+            base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.global_sum_stats.num_cols))
+        }
+        else{
+            base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
+        }
+
+        
 
         if(self.model.row_major_counts[self.facet].length < 2){
             this.view
@@ -1144,6 +1228,7 @@ class Heatmap{
                 .attr('transform', `translate(${draw_width/2},${draw_height/2})`)
         }   
         else{
+
             this.view
             .selectAll('.column')
             .data(this.model.faceted_bins[this.facet].column)
@@ -1216,6 +1301,9 @@ class Heatmap{
                     )
                     col.on('mouseenter', function (e, d){
                         delete self.cached_bins['hover'];
+
+                        console.log("HOVERING OVER: ", d);
+
                         self.focus_col(d3.select(e.target));
                         if(!Object.keys(self.cached_bins).includes(String(d.threshold))){
                             let dt_text_selection = d3.select(e.target).select('.text-field');
@@ -1371,7 +1459,8 @@ class Histogram{
             let h_hist = this.parent.append('g')
                     .attr('class', 'faceted-h-hist')
                     .attr('transform', `translate(${x_offset},${y_offset})`);
-                    h_hist.append('rect')
+            
+            h_hist.append('rect')
                         .attr('width', this.width - 2*HISTOGRAM_LAYOUT.inner_padding)
                         .attr('height', this.height - HISTOGRAM_LAYOUT.inner_padding)
                         .attr('fill', 'rgba(240,240,240)')
@@ -1415,7 +1504,6 @@ class Histogram{
                         if(self.model.scale_types[self.facet]['x']['log'] || self.model.scale_types[self.facet]['x']['linear']){
                             select = selection.map(self.scale_x.scale.invert, self.scale_x.scale).map((d)=>{return d});
                         }
-                        console.log(select);
                     }else{
                         select = [];
                     }
@@ -1498,9 +1586,17 @@ class Histogram{
 
             //references OVERVIEW LAYOUT SIZES
             //BE CAREFUL
-            this.scale_x = new SmartScale([sum_stats.x.min, sum_stats.x.max],
+            if(SHARED_X_SCALE){
+                this.scale_x = new SmartScale([this.model.global_sum_stats.x.min, this.model.global_sum_stats.x.max],
                             [OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.width-OVERVIEW_LAYOUT.inner_padding],
                             this.model);
+            }
+            else{
+                this.scale_x = new SmartScale([sum_stats.x.min, sum_stats.x.max],
+                            [OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.width-OVERVIEW_LAYOUT.inner_padding],
+                            this.model);
+            }
+            
         }
         
         else if(this.orientation == 'right'){
@@ -1548,13 +1644,21 @@ class Histogram{
      */
     render(){
         const self = this;
-        let bar_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
+        let bar_width = 0;
+        if(SHARED_X_SCALE){
+            bar_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.global_sum_stats.num_cols))
+        }
+        else{
+            bar_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
+        }
+            
         let bar_layer = this.view.select('.bars');
+
     
         if(self.model.row_major_counts[self.facet].length > 2){
             if(this.orientation == 'bottom'){
                 bar_layer.selectAll('.column')
-                        .data(self.model.faceted_bins[self.facet].column, function(d){return this.id} )
+                        .data(self.model.faceted_bins[self.facet].column, function(){return this.id} )
                         .join(
                             function(enter){
                                 let col = enter.append('g')
@@ -1592,7 +1696,9 @@ class Histogram{
 
                             row.append('rect')
                                 .attr('class', 'bar')
-                                .attr('width', (d)=>{return self.scale_x(d)})
+                                .attr('width', (d)=>{
+                                        return self.scale_x(d) ? self.scale_x(d) : 0;
+                                    })
                                 .attr('height', (d)=>{return draw_height / self.model.faceted_bins[self.facet].column[0].bins.length})
                                 .attr('fill', TAN);
                             
@@ -1602,7 +1708,6 @@ class Histogram{
                             update.select('.bar')
                                 .transition()
                                 .attr('width', (d)=>{
-
                                         return self.scale_x(d) ? self.scale_x(d) : 0;
                                     });
                         },
@@ -1612,6 +1717,7 @@ class Histogram{
                     )
             }
         }
+
     }  
 }
 
@@ -1987,7 +2093,6 @@ class Validator{
      */
     isValidDate(dateString) {
         const date_time = new Date(dateString);
-        console.log("AAAAA", date_time.getTime());
         return !isNaN(date_time.getTime());
     }
 
@@ -2079,6 +2184,15 @@ class Validator{
         return missing;
     }
 
+
+    // Function to coerce an entire column’s values to strings
+    coerceColumnToString(columnData) {
+        return Object.keys(columnData).reduce((result, key) => {
+            result[key] = String(columnData[key]);
+            return result;
+        }, {});
+    }
+
     /**
      * Ensures that all values in this.var_specs are logically appropriate
      * @param {Object} this.var_specs - The variable specifications.
@@ -2100,11 +2214,11 @@ class Validator{
                 if (typeof test_val !== 'number'){
                     if(typeof test_val == 'string'){
                         if(!this.isValidDate(test_val)){
-                            incorrect.push({ key: key, value: this.var_specs[key], message: 'The x-axis aaaaa only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
+                            incorrect.push({ key: key, value: this.var_specs[key], message: 'The x-axis only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
                         }
                     }
                     else {
-                        incorrect.push({ key: key, value: this.var_specs[key], message: 'The x-axis bbbbbb only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
+                        incorrect.push({ key: key, value: this.var_specs[key], message: 'The x-axis only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
                     }
                 }
             }
@@ -2122,8 +2236,15 @@ class Validator{
             }
             else if (key === 'categorical'){
                 let test_val = this.data[this.var_specs[key]][Object.keys(this.data[this.var_specs[key]])[0]];
+                // For categorical variables, coerce data to strings if necessary.
                 if(typeof test_val !== 'string'){
-                    incorrect.push({ key: key, value: this.var_specs[key], message: 'The categorical view only supports categorical variables formatted as strings. Please specify a different column on your dataset or reformat an exisitng column.' });
+                    // Coerce the column data at this.data[this.var_specs[key]]
+                    this.data[this.var_specs[key]] = coerceColumnToString(this.data[this.var_specs[key]]);
+                    // Re-check the data type after coercion
+                    test_val = this.data[this.var_specs[key]][Object.keys(this.data[this.var_specs[key]])[0]];
+                    if(typeof test_val !== 'string'){
+                        incorrect.push({ key: key, value: this.var_specs[key], message: 'The categorical view only supports categorical variables formatted as strings. Please specify a different column on your dataset or reformat an existing column.' });
+                    }
                 }
             }
         }
@@ -2221,7 +2342,6 @@ function render({model, el}){
 
         validator.data = data;
         is_valid = validator.validate();
-        console.log()
         
         if(is_valid){
             let jsmodel = new JSModel(data, var_specs, model);
@@ -2234,4 +2354,4 @@ function render({model, el}){
 
 
 
-export default{ render }
+export default{ render };
