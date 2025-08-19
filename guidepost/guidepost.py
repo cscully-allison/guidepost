@@ -5,6 +5,7 @@ import numpy as np
 import warnings
 import json
 import os
+import sys
 
 class Guidepost(anywidget.AnyWidget):
     _esm = os.path.join(os.path.dirname(__file__), "guidepost.js")
@@ -23,6 +24,9 @@ class Guidepost(anywidget.AnyWidget):
         in_cpy = in_df.copy()
         in_cpy.insert(0, 'gp_idx', range(0, len(in_cpy)))
         self.cached_records_df = in_cpy
+
+        if sys.version_info.major < 3 or sys.version_info.minor < 12:
+            raise EnvironmentError("Python 3.12 or greater is required to run this library.")
 
         _warn_skips = (os.path.dirname('.'),)
         original_cols = in_cpy.columns

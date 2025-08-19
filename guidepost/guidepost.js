@@ -271,6 +271,7 @@ class JSModel{
             sum_stats.var = sum_stats.variance;
             sum_stats.average = sum_stats.avg;
             sum_stats.mean = sum_stats.avg;
+            sum_stats.count = data.length;
         }
         else{
             sum_stats.sum = 0;
@@ -283,6 +284,7 @@ class JSModel{
             sum_stats.std = 0;
             sum_stats.median = 0;
             sum_stats.med = 0;
+            sum_stats.count = 0;
         }
 
     
@@ -436,7 +438,7 @@ class JSModel{
                 stats.values = bin;
                 stats.std_ratio = stats.std / this.faceted_sum_stats[fac].color.std;
                 stats.threshold = y_axis_thresholds[index];
-                this.color_scale_range[0] = Math.min(this.color_scale_range[0], stats[this.vars.color_agg]);
+                this.color_scale_range[0] = Math.min(this.color_scale_range[0], stats[this.vars.color_agg] ? stats[this.vars.color_agg] : this.color_scale_range[0]);
                 this.color_scale_range[1] = Math.max(this.color_scale_range[1], stats[this.vars.color_agg]);
                 return stats;
             });
@@ -587,11 +589,9 @@ class JSModel{
             if(this.is_more_than_n_orders_of_magnitude(sum_stats.y.min, sum_stats.y.max, 3)){
                 this.scale_types[fac].y.log = true;
                 this.y_axis_thresholds[fac] = this.logScale(this.log_values_floor, sum_stats.y.max, num_rows);
-                console.log("Y AXIS THRESHOLDS LOG: ", fac, this.y_axis_thresholds[fac].length);
             } else {
                 this.scale_types[fac].y.linear = true;
                 this.y_axis_thresholds[fac] = this.linearScale(sum_stats.y.min, sum_stats.y.max, num_rows);
-                console.log("Y AXIS THRESHOLDS LINEAR: ", fac, this.y_axis_thresholds[fac].length);
             }
 
             sum_stats.col_counts = {
@@ -1025,9 +1025,14 @@ class Heatmap{
                     .attr('height', this.height);
 
 
+        let axis_left = d3.axisLeft().scale(this.scale_y_inverse);
+        if(this.model.scale_types[this.facet].y.linear){
+            axis_left.tickFormat(d3.format(".2s"));
+        }
+
         view.append('g')
             .attr('class', 'left-axis')
-            .call(d3.axisLeft().scale(this.scale_y_inverse))   
+            .call(axis_left)   
             .attr('transform', `translate(${OVERVIEW_LAYOUT.inner_padding},${0})`);
 
         view.append('g')
@@ -1969,6 +1974,7 @@ class Legend {
         if(color_scale.domain().length > 2){
             this.ticks_scale = d3.scaleDiverging().domain(color_scale.domain().reverse()).range([0, this.bar_height/2, this.bar_height]);
         } else{
+            console.log("DOMAIN at LEGEND CREATE", color_scale.domain());
             if(color_scale.domain()[1] > 2){
                 this.ticks_scale = d3.scaleSymlog().domain([color_scale.domain()[0]+1, color_scale.domain()[1]].reverse()).range([0, this.bar_height]);
             }
