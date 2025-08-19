@@ -236,7 +236,7 @@ class JSModel{
      * @param {string} col - The column to get summary statistics for.
      * @returns {Object} - The summary statistics for the column.
      */
-    get_summary_stats(data, col){
+    get_summary_stats(data, col, index){
         let sum_stats = {};
 
         if(data.length > 0){
@@ -286,6 +286,9 @@ class JSModel{
             sum_stats.med = 0;
             sum_stats.count = 0;
         }
+
+        
+        sum_stats.index = index;
 
     
         return sum_stats;
@@ -373,6 +376,29 @@ class JSModel{
         return Math.log10(max) - Math.log10(min) > order;
     }
 
+  
+    //box bins for a column
+    binValues(values, thresholds, accessor) {
+        const bins = [];
+        // Create an empty bin for each interval between consecutive thresholds
+        for (let i = 0; i < thresholds.length - 1; i++) {
+            bins.push([]);
+        }
+        // Place each value in the appropriate bin
+        values.forEach(d => {
+            const val = accessor(d);
+            for (let i = 0; i < thresholds.length - 1; i++) {
+                // For the last bin, include values equal to the upper bound
+                if (val >= thresholds[i] && (i === thresholds.length - 2 || val < thresholds[i + 1])) {
+                    bins[i].push(d);
+                    break;
+                }
+            }
+        });
+        return bins;
+    }
+
+
     /**
      * Calculates metrics for the rectangles of the summary view for a specified facet. Bins come into this function already oragnized 
      * into columns delinated by the x_axis_thresholds. It's a user specified datetime variable.
@@ -387,8 +413,9 @@ class JSModel{
         // console.log("CALC BOX METRICS: ", fac, current_bins, x_axis_thresholds, y_axis_thresholds);
 
         // Iterate over the columns that divide the data along the x axis
+        
+        let col_indx = 0;
         for(let bin in current_bins){
-
             let filtered_bin;
             
             //Do not filter if no filter is specified currently
@@ -403,34 +430,13 @@ class JSModel{
                 }
             }
 
-            let temp_box_stats = this.get_summary_stats(filtered_bin, this.vars.y);
-
+            // Get summary statistics for the entire column of data before it is split into rows
+            let temp_box_stats = this.get_summary_stats(filtered_bin, this.vars.y, col_indx);
             temp_box_stats.threshold = x_axis_thresholds[bin];
 
             temp_box_stats.bins = [];
-            
-            //box bins for this column
-            function binValues(values, thresholds, accessor) {
-                const bins = [];
-                // Create an empty bin for each interval between consecutive thresholds
-                for (let i = 0; i < thresholds.length - 1; i++) {
-                    bins.push([]);
-                }
-                // Place each value in the appropriate bin
-                values.forEach(d => {
-                    const val = accessor(d);
-                    for (let i = 0; i < thresholds.length - 1; i++) {
-                        // For the last bin, include values equal to the upper bound
-                        if (val >= thresholds[i] && (i === thresholds.length - 2 || val < thresholds[i + 1])) {
-                            bins[i].push(d);
-                            break;
-                        }
-                    }
-                });
-                return bins;
-            }
-
-            const customBins = binValues(filtered_bin, y_axis_thresholds, d => d[this.vars.y]);
+          
+            const customBins = this.binValues(filtered_bin, y_axis_thresholds, d => d[this.vars.y]);
 
             // Process each bin's summary statistics and update color scale range
             temp_box_stats.bins = customBins.map((bin, index) => {
@@ -444,44 +450,10 @@ class JSModel{
             });
 
 
-            // let row_bins = d3.bin()
-            //             .value(d => d[this.vars.y])
-            //             .domain([sum_stats.y.min, sum_stats.y.max]).thresholds(y_axis_thresholds)(filtered_bin);
-
-            // // console.log("ROW BINS BEFORE CLAMP: ", row_bins.length, y_axis_thresholds.length);
-
-
-            // //clamps down last bin(s) if more are produced than desired
-            // // idk why but d3 produces too many bins sometimes
-            // if(row_bins.length > y_axis_thresholds.length-1){
-            //     let diff = (y_axis_thresholds.length-1)-row_bins.length;
-            //     let head = row_bins.slice(0, diff);
-
-            //     for(let i = row_bins.length-1; i > y_axis_thresholds.length-2; i--){
-            //         head[head.length-1] = head[head.length-1].concat(row_bins[i]);
-            //     }
-            //     row_bins = head;
-            // }
-
-            // // console.log("ROW BINS AFTER CLAMP: ", row_bins.length, y_axis_thresholds.length);
-
-            // //load individual boxes of values with summary statistics describing them
-            // for(let index in row_bins){
-            //     let row = row_bins[index];
-            //     let sum_stats = this.get_summary_stats(row, this.vars.color);
-            //     sum_stats.values = row;
-            //     sum_stats['std_ratio'] = sum_stats.std/this.faceted_sum_stats[fac].color.std;
-            //     sum_stats.threshold = y_axis_thresholds[index];
-            //     temp_box_stats.bins.push(sum_stats);
-            //     this.color_scale_range[0] = Math.min(this.color_scale_range[0], sum_stats[this.vars.color_agg]);
-            //     this.color_scale_range[1] = Math.max(this.color_scale_range[1], sum_stats[this.vars.color_agg]);
-            // }
-
             temp_box_stats.column_values = filtered_bin;
             this.faceted_bins[fac].column[bin] = temp_box_stats;
+            col_indx += 1;
         }
-
-        // console.log("THE BINS END OF CALC BOX METRICS: ", this.faceted_bins[fac].column);
 
     }
 
@@ -550,7 +522,8 @@ class JSModel{
             this.faceted_bins[fac] = {}
             
 
-            console.log("SUM STATS: ", fac, sum_stats);
+
+            // console.log("SUM STATS: ", fac, sum_stats, "blahaj");
 
             //conditional x axis thresholds based on time or numbers
             // important for calculating the scales which layout the columns
@@ -603,11 +576,9 @@ class JSModel{
                 sum_stats.col_counts.max = Math.max(sum_stats.col_counts.max, bin.length);
                 sum_stats.col_counts.min = Math.min(sum_stats.col_counts.min, bin.length);
             }
-
             
             this.global_sum_stats.num_cols = Math.max(this.faceted_bins[fac].column.length, this.global_sum_stats.num_cols);
 
-            // temporary as Y AXIS IS FIXED LOG
             this.calculate_box_metrics(fac, this.x_axis_thresholds[fac], this.y_axis_thresholds[fac]);
             this.calc_row_major_counts(fac);
 
@@ -1469,7 +1440,11 @@ class Histogram{
                         .attr('width', this.width - 2*HISTOGRAM_LAYOUT.inner_padding)
                         .attr('height', this.height - HISTOGRAM_LAYOUT.inner_padding)
                         .attr('fill', 'rgba(240,240,240)')
-                        .attr('transform', `translate(${HISTOGRAM_LAYOUT.inner_padding},${0})`);;
+                        .attr('transform', `translate(${HISTOGRAM_LAYOUT.inner_padding},${0})`);
+
+            
+            h_hist.append("g")
+                .attr('class', 'bars');
 
             h_hist.append('g')
                     .attr('class', 'left-axis')
@@ -1492,8 +1467,6 @@ class Histogram{
                     .attr('transform', `translate(${this.width/2},${this.height})`);
 
             
-            h_hist.append("g")
-                .attr('class', 'bars');
 
             this.view = h_hist;
         
@@ -1650,6 +1623,8 @@ class Histogram{
     render(){
         const self = this;
         let bar_width = 0;
+        let axis_height = 1;
+
         if(SHARED_X_SCALE){
             bar_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.global_sum_stats.num_cols))
         }
@@ -1663,7 +1638,7 @@ class Histogram{
         if(self.model.row_major_counts[self.facet].length > 2){
             if(this.orientation == 'bottom'){
                 bar_layer.selectAll('.column')
-                        .data(self.model.faceted_bins[self.facet].column, function(){return this.id} )
+                        .data(self.model.faceted_bins[self.facet].column, function(d){console.log("INDEX", d.index); return d.index} )
                         .join(
                             function(enter){
                                 let col = enter.append('g')
@@ -1680,12 +1655,14 @@ class Histogram{
                                     .attr('height', (d)=>{return self.scale_y(d.column_values.length)})
                                     .attr('width', bar_width)
                                     .attr('fill', TAN)
-                                    .attr(`transform`, (d)=>{return `translate(${0}, ${(HISTOGRAM_LAYOUT.height- self.scale_y(d.column_values.length))-2*HISTOGRAM_LAYOUT.inner_padding})`});
+                                    .attr(`transform`, (d)=>{return `translate(${0}, ${(HISTOGRAM_LAYOUT.height- self.scale_y(d.column_values.length))-2*HISTOGRAM_LAYOUT.inner_padding - axis_height})`});
                             },
                             function(update){
-                                update.selectAll('rect')
+                                update.select('.bar')
                                     .transition()
+                                    .duration(500)
                                     .attr('height', (d,i)=>{return self.scale_y(self.model.faceted_bins[self.facet].column[i].column_values.length)})
+                                    .attr(`transform`, (d, i)=>{return `translate(${0}, ${(HISTOGRAM_LAYOUT.height- self.scale_y(self.model.faceted_bins[self.facet].column[i].column_values.length))-2*HISTOGRAM_LAYOUT.inner_padding - axis_height})`});
                             }
                         );
             }
