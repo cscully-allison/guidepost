@@ -90,9 +90,9 @@ class Guidepost(anywidget.AnyWidget):
         if(o_df.shape[0]>250_000):
             if(not supress_warnings):
                 if warn_supported_version:
-                    warnings.warn("Your dataframe is very large. You may experience performance issues. Consider subsampling or reducing the data down to below 200,000 rows to enhance performance.".format(rmvd_cols), skip_file_prefixes=_warn_skips)
+                    warnings.warn("Your dataframe is very large. You may experience performance issues. Consider subsampling or reducing the data down to below 200,000 rows to enhance performance.", skip_file_prefixes=_warn_skips)
                 else:
-                    print("Warning: Your dataframe is very large. You may experience performance issues. Consider subsampling or reducing the data down to below 200,000 rows to enhance performance.".format(rmvd_cols)) 
+                    print("Warning: Your dataframe is very large. You may experience performance issues. Consider subsampling or reducing the data down to below 200,000 rows to enhance performance.") 
 
         
         self.vis_data = o_df.to_dict()
