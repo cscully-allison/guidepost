@@ -2081,7 +2081,7 @@ class Validator{
 
     validate_data_loaded(){
         if(Object.keys(this.data).length == 0){
-            return [{key:'data', value:'data', message:"No data detected. Please load data into <objectname>.vis_data"}];
+            return [{key:'data', value:'data', message:"No data detected. Please load data into <objectname>.records"}];
         }
 
         return [];
@@ -2234,11 +2234,36 @@ class Validator{
         return incorrect;
     }
 
+}
 
+class ConfigurationInterface{
+    constructor(model, parent){
+        this.model = model;
+        this.parent = parent;
+    
+        this.initial_render();
+    }
+
+    initial_render(){
+        let config_grp = this.parent.append('g')
+                            .attr('class', 'config_interface')
+                            .attr('transform', `translate(${50},${50})`);
+                            
+        config_grp.append('text')
+            .text('Configuration Interface Coming Soon!')
+            .attr('font-size', '24px')
+            .attr('font-weight', 'bold');
+    }
+    
+    render(){
+        // Future implementation for dynamic configuration interface rendering
+    }
 }
 
 function create_views(model, svg){
     svg.selectAll("*").remove();
+
+    // let config_interface = new ConfigurationInterface(model, parent);        
 
     for(let i in model.facets){
         let parent = svg.append('g')
@@ -2247,8 +2272,7 @@ function create_views(model, svg){
                         .attr('width', OVERVIEW_LAYOUT.width)
                         .attr('height', FACET_LAYOUT.height + HISTOGRAM_LAYOUT.height);
 
-        
-                        
+                
         let h_histogram = new Histogram(model, parent, model.facets[i], HISTOGRAM_LAYOUT.height, HISTOGRAM_LAYOUT.width, "bottom");
         let v_histogram = new Histogram(model, parent, model.facets[i], VERT_HISTOGRAM_LAYOUT.height, VERT_HISTOGRAM_LAYOUT.width, "right");
         let cat_histogram = new CategoricalBarChart(model, parent, model.facets[i], CAT_HISTOGRAM_LAYOUT.height, CAT_HISTOGRAM_LAYOUT.width, "bottom");
@@ -2276,8 +2300,10 @@ function create_views(model, svg){
 
 
 
+
+
 function render({model, el}){
-    let data = model.get("vis_data");
+    let data = model.get("_vis_data");
     let var_specs = model.get("vis_configs");
 
     model.set("selected_records", "");
@@ -2302,7 +2328,7 @@ function render({model, el}){
         }
 
         var_specs = model.get("vis_configs");
-        data = model.get("vis_data");
+        data = model.get("_vis_data");
 
         validator.var_specs = var_specs;
         validator.data = data;
@@ -2314,14 +2340,14 @@ function render({model, el}){
         }
     })
 
-    model.on("change:vis_data", ()=>{
+    model.on("change:_vis_data", ()=>{
 
         if(first_text){
             first_text.remove();
             first_text=null;
         }
 
-        data = model.get("vis_data");
+        data = model.get("_vis_data");
 
         validator.data = data;
         is_valid = validator.validate();

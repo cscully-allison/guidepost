@@ -1,0 +1,1 @@
+esbuild --bundle --format=esm --outdir=guidepost/static guidepost/src/campsite.js --watch

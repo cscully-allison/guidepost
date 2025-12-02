@@ -6,18 +6,18 @@ import warnings
 import json
 import os
 import sys
-from pandas.api import types as ptypes
 from .utils import convert_to_float, validate_and_clean_dataframe, extract_summary_statistics
 
-class Trailmark(anywidget.AnyWidget):
-    _esm = os.path.join(os.path.dirname(__file__), "static", "trailmark.js")
+class Campsite(anywidget.AnyWidget):
+    _esm = os.path.join(os.path.dirname(__file__), "static", "campsite.js")
     _vis_data = traitlets.Dict({}).tag(sync=True)
+    _summary_stats = traitlets.Dict({}).tag(sync=True)
     records = None
     vis_configs = traitlets.Dict({}).tag(sync=True)
 
+
     suppress_warnings = False
     
-
     @property
     def records(self):
         return self._vis_data
@@ -30,8 +30,7 @@ class Trailmark(anywidget.AnyWidget):
         '''
             Load dataframe and extract summary statistics for visualization.
         '''
-        
-        # validate / coerce dataframe
+    # validate / coerce dataframe
         if not isinstance(in_df, pd.DataFrame):
             try:
                 in_df = pd.DataFrame(in_df)
@@ -42,24 +41,6 @@ class Trailmark(anywidget.AnyWidget):
             warnings.warn("load_data called with an empty DataFrame")
 
         o_df, report = validate_and_clean_dataframe(in_df, self.suppress_warnings)
+        self._summary_stats = extract_summary_statistics(o_df)
 
-        self.vis_data = extract_summary_statistics(o_df)
-        
-        
-        self.vis_configs = {
-            "n_rows": len(o_df),
-            "n_columns": len(o_df.columns),
-            "type_counts": type_counts,
-        }
-
-        # print("Data loaded: {} rows, {} columns".format(len(in_df), len(in_df.columns)))
-        # print("Column types: {} continuous, {} ordinal, {} categorical".format(
-        #     type_counts["continuous"],
-        #     type_counts["ordinal"],
-        #     type_counts["categorical"]
-        # ))
-        return self.vis_data
-        
-        
-    # def retrieve_configuration_selection(self):
-        # 
+        return self._summary_stats
