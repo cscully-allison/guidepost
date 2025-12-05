@@ -19,7 +19,7 @@ def convert_to_float(value):
 
 def validate_and_clean_dataframe(in_cpy, supress_warnings=False):
     _warn_skips = (os.path.dirname('.'),)
-    warn_supported_version = True
+    warn_supported_version = False
     
     original_cols = in_cpy.columns
     o_df = in_cpy.dropna(axis=1, how='all')

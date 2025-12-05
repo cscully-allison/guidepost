@@ -1,1 +1,1 @@
-esbuild --bundle --format=esm --outdir=guidepost/static guidepost/src/guidepost.js guidepost/src/campsite.js --watch
+esbuild --bundle --format=esm --outdir=guidepost/static guidepost/src/guidepost.js guidepost/src/campsite.js guidepost/src/trailmark.js --watch

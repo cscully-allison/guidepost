@@ -1,5 +1,4 @@
 import { SimpleChatModel } from "@langchain/core/language_models/chat_models";
-import { sum } from "d3";
 import * as d3 from "https://esm.sh/d3@7";
 // import * as d3 from "d3";
 

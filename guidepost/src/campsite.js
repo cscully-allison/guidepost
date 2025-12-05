@@ -2,8 +2,8 @@ import * as d3 from "https://esm.sh/d3@7";
 import { ChatOpenAI } from "@langchain/openai";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { hypothesis_agent_system_prompt, code_agent_system_prompt } from "./prompt_engineering"; 
-import anime from "https://esm.sh/animejs@3.2.1";
 import {GPTConfig} from "./local_configs";
+import anime from "https://esm.sh/animejs@3.2.1";
 
 
 const padding = 10;
@@ -218,19 +218,20 @@ class ChatInterface{
                     .attr("cy", 0)
                     .attr("r", 8)
                     .attr("fill", "grey");
+
+            anime({
+                targets: '.loading-dot',
+                translateY: [
+                    { value: -10, duration: 500 },
+                    { value: 0, duration: 500 }
+                ],
+                easing: 'easeInOutSine',
+                delay: anime.stagger(200), // Delay each dot animation
+                loop: true
+            });
+
         }
         
-        anime({
-            targets: '.loading-dot',
-            translateY: [
-                { value: -10, duration: 500 },
-                { value: 0, duration: 500 }
-            ],
-            easing: 'easeInOutSine',
-            delay: anime.stagger(200), // Delay each dot animation
-            loop: true
-        });
-
         loading.attr('visibility', 'hidden');
         
     }
@@ -309,6 +310,8 @@ class CodeDisplayInterface{
         this.disp_grp.selectAll('text').remove();
         // console.log("rendercalled", this.model.response);
 
+        console.log("This model updating in render:", this.model.response);
+
         this.text_area.selectAll('.chat-text')
             .data(this.model.response, (d)=>{this.toHash(d.natural_language)})
             .join(
@@ -353,6 +356,8 @@ function render({model, el}){
     let svg = d3.select(el).append('svg').attr('width', 900).attr('height', 300) ;
     svg.style("border", "1px solid black");
     
+    
+
 
     var data_model = new CSModel(data);
     var agents = {
