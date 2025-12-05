@@ -5,7 +5,7 @@ import numpy as np
 import json
 import os
 import sys
-from .utils import validate_and_clean_dataframe
+from .utils import validate_and_clean_dataframe, extract_summary_statistics
 
 class Guidepost(anywidget.AnyWidget):
     
@@ -19,6 +19,8 @@ class Guidepost(anywidget.AnyWidget):
     selected_records = traitlets.Unicode("[]").tag(sync=True)
     records_df = pd.DataFrame()
     selection = None
+
+    _summary_stats = traitlets.Dict({}).tag(sync=True)
 
     suppress_warnings = False
     
@@ -45,6 +47,7 @@ class Guidepost(anywidget.AnyWidget):
 
         o_df, report = validate_and_clean_dataframe(in_cpy, self.suppress_warnings)
         
+        self._summary_stats = extract_summary_statistics(o_df)
         self._vis_data = o_df.to_dict()
         return o_df.to_dict()
         

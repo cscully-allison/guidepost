@@ -1,3 +1,5 @@
+import { SimpleChatModel } from "@langchain/core/language_models/chat_models";
+import { sum } from "d3";
 import * as d3 from "https://esm.sh/d3@7";
 // import * as d3 from "d3";
 
@@ -49,6 +51,16 @@ const LEGEND_LAYOUT = {
     right_padding: 50
 }
 
+const CONFIGURATION_LAYOUT = {
+    width: OVERVIEW_LAYOUT.width,
+    height: 150
+}
+
+const VIS_HEADER_HEIGHT = 30;
+const HEADER_HEIGHT = 50;
+
+const FULL_SVG_WIDTH = OVERVIEW_LAYOUT.width + (2 * OVERVIEW_LAYOUT.outer_margin) + (VERT_HISTOGRAM_LAYOUT.width+(2*VERT_HISTOGRAM_LAYOUT.outer_margin)) + LEGEND_LAYOUT.width
+
 const X_VARIABLE_OFFSET = LEGEND_LAYOUT.width;
 const Y_VARIABLE_OFFSET = 0;
 
@@ -66,6 +78,9 @@ const RICH_BLUE = 'rgb(32, 61, 192)';
 const TAN = 'rgb(215, 194, 191)';
 const RICH_TAN = 'rgb(180, 144, 139)';
 
+const GUIDEPOST_MAIN_COLOR = '#aec3d1e8'
+const BACKGROUND_COLOR = '#e3e6ebea';
+
 let draw_width = OVERVIEW_LAYOUT.width-2*OVERVIEW_LAYOUT.inner_padding;
 let draw_height = OVERVIEW_LAYOUT.height - 2*OVERVIEW_LAYOUT.inner_padding;
 let total_hist_height = HISTOGRAM_LAYOUT.height + HISTOGRAM_LAYOUT.outer_margin;
@@ -75,12 +90,13 @@ let zoom_factor_v = 10;
 
 
 class JSModel{
-    constructor(data, var_specifications, anywidget_model){
+    constructor(data, var_specifications, feature_summary_stats, anywidget_model){
         this.data = this.list_major(data);
         this.data = this.facet(this.data, var_specifications['facet_by']);
         this.facets = Object.keys(this.data);
         this.vars = var_specifications;
         this.anywidget_model = anywidget_model;
+        this.feature_summary_stats = feature_summary_stats;
         this.views = {};
         this.color_scale_range = [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];
         this.log_values_floor = 1;
@@ -103,7 +119,6 @@ class JSModel{
                 pinned_category: {}
             };
         }
-
 
 
         //faceted derived data
@@ -1638,7 +1653,7 @@ class Histogram{
         if(self.model.row_major_counts[self.facet].length > 2){
             if(this.orientation == 'bottom'){
                 bar_layer.selectAll('.column')
-                        .data(self.model.faceted_bins[self.facet].column, function(d){console.log("INDEX", d.index); return d.index} )
+                        .data(self.model.faceted_bins[self.facet].column, function(d){return d.index} )
                         .join(
                             function(enter){
                                 let col = enter.append('g')
@@ -1833,7 +1848,6 @@ class CategoricalBarChart{
         }
         
         else if(this.orientation == 'right'){
-
             this.scale_y = d3.scaleLinear()
                 .domain([num_rows-2, -1])
                 .range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding]);
@@ -1950,8 +1964,8 @@ class Legend {
 
         if(color_scale.domain().length > 2){
             this.ticks_scale = d3.scaleDiverging().domain(color_scale.domain().reverse()).range([0, this.bar_height/2, this.bar_height]);
-        } else{
-            console.log("DOMAIN at LEGEND CREATE", color_scale.domain());
+        } 
+        else{
             if(color_scale.domain()[1] > 2){
                 this.ticks_scale = d3.scaleSymlog().domain([color_scale.domain()[0]+1, color_scale.domain()[1]].reverse()).range([0, this.bar_height]);
             }
@@ -2240,35 +2254,76 @@ class ConfigurationInterface{
     constructor(model, parent){
         this.model = model;
         this.parent = parent;
+
+        this.title_padding = 30;
     
         this.initial_render();
     }
 
-    initial_render(){
-        let config_grp = this.parent.append('g')
-                            .attr('class', 'config_interface')
-                            .attr('transform', `translate(${50},${50})`);
-                            
-        config_grp.append('text')
-            .text('Configuration Interface Coming Soon!')
-            .attr('font-size', '24px')
-            .attr('font-weight', 'bold');
+    createDropdown(options, onChangeCallback) {
+        const dropdownGroup = this.parent.append('g')
+            .attr('class', 'dropdown-group')
+            .attr('transform', `translate(${20}, ${50})`);
+
+        const dropdown = dropdownGroup.append('foreignObject')
+            .attr('width', 200)
+            .attr('height', 30)
+            .append('xhtml:select')
+            .style('width', '100%')
+            .style('height', '100%')
+            .on('change', function () {
+                const selectedValue = d3.select(this).property('value');
+                onChangeCallback(selectedValue);
+            });
+
+        dropdown.selectAll('option')
+            .data(options)
+            .enter()
+            .append('xhtml:option')
+            .attr('value', d => d)
+            .text(d => d);
     }
-    
-    render(){
-        // Future implementation for dynamic configuration interface rendering
+
+    initial_render(){
+        console.log(this.model.feature_summary_stats);
+
+        this.parent
+            .append('text')
+            .text('Configurations')
+            .attr('transform', `translate(${10},${this.title_padding})`)
+            .attr('font-size', '13pt')
+
+
+        this.createDropdown(['a','b', 'c'], (v)=>{console.log("Changed", v)});
+        // this.parent;
+
     }
 }
 
+
 function create_views(model, svg){
-    svg.selectAll("*").remove();
 
-    // let config_interface = new ConfigurationInterface(model, parent);        
+    // let config_interface = new ConfigurationInterface(model, parent);
+    let vis_group = svg.append('g')
+                        .attr('class', 'visualization_group')
+                        .attr('transform', `translate(0,${CONFIGURATION_LAYOUT.height + HEADER_HEIGHT})`);
 
+    vis_group.append('text')
+                .text(`Views grouped by:`)
+                .attr('transform', `translate(${10},${10})`)
+                .attr('font-size', '13pt');
+
+
+    vis_group.append('text')
+                .text(`\"${model.vars['facet_by']}\"`)
+                .attr('transform', `translate(${155},${10})`)
+                .attr('font-size', '13pt')
+                .attr('font-weight', 'bold');
+    
     for(let i in model.facets){
-        let parent = svg.append('g')
+        let parent = vis_group.append('g')
                         .attr('class', 'faceted_view')
-                        .attr('transform', `translate(${OVERVIEW_LAYOUT.outer_margin},${(OVERVIEW_LAYOUT.height * i) + ((FACET_LAYOUT.outer_margin * i) + (total_hist_height*i))})`)
+                        .attr('transform', `translate(${OVERVIEW_LAYOUT.outer_margin},${(OVERVIEW_LAYOUT.height * i) + ((FACET_LAYOUT.outer_margin * i) + (total_hist_height*i))+ VIS_HEADER_HEIGHT})`)
                         .attr('width', OVERVIEW_LAYOUT.width)
                         .attr('height', FACET_LAYOUT.height + HISTOGRAM_LAYOUT.height);
 
@@ -2293,69 +2348,80 @@ function create_views(model, svg){
     }
 
 
-    svg.attr('height', (OVERVIEW_LAYOUT.height * model.facets.length) + (FACET_LAYOUT.outer_margin*(model.facets.length+1) + total_hist_height*model.facets.length))
-        .attr('width', OVERVIEW_LAYOUT.width + (2 * OVERVIEW_LAYOUT.outer_margin) + (VERT_HISTOGRAM_LAYOUT.width+(2*VERT_HISTOGRAM_LAYOUT.outer_margin)) + LEGEND_LAYOUT.width)
+    svg.select('#bg-mat').attr('height', (OVERVIEW_LAYOUT.height * model.facets.length) + (FACET_LAYOUT.outer_margin*(model.facets.length+1) + total_hist_height*model.facets.length) + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT)
+        .attr('width', OVERVIEW_LAYOUT.width + (2 * OVERVIEW_LAYOUT.outer_margin) + (VERT_HISTOGRAM_LAYOUT.width+(2*VERT_HISTOGRAM_LAYOUT.outer_margin)) + LEGEND_LAYOUT.width);
+    
+    svg.attr('height', (OVERVIEW_LAYOUT.height * model.facets.length) + (FACET_LAYOUT.outer_margin*(model.facets.length+1) + total_hist_height*model.facets.length) + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT)
+        .attr('width', OVERVIEW_LAYOUT.width + (2 * OVERVIEW_LAYOUT.outer_margin) + (VERT_HISTOGRAM_LAYOUT.width+(2*VERT_HISTOGRAM_LAYOUT.outer_margin)) + LEGEND_LAYOUT.width);
+
 
 }
 
 
+function reload_vis(model, validator, svg){
+        let var_specs = model.get("vis_configs");
+        let data = model.get("_vis_data");
+        let _summary_stats = model.get("_summary_stats");
 
+        validator.var_specs = var_specs;
+        validator.data = data;
 
+        if(validator.validate()){
+            let jsmodel = new JSModel(data, var_specs, _summary_stats, model); 
+            create_views(jsmodel, svg);
+        }
+}
 
 function render({model, el}){
     let data = model.get("_vis_data");
     let var_specs = model.get("vis_configs");
+    let _summary_stats = model.get("_summary_stats");
 
     model.set("selected_records", "");
     model.save_changes();
 
-    let svg = d3.select(el).append('svg').attr('width', 500).attr('height', 50);
-    let first_text = null;
+    let svg = d3.select(el).append('svg')
+                            .attr('width', 500)
+                            .attr('height', 50)
+                            .style('font-family', 'sans-serif')
+    svg.append('rect')
+        .attr('id', 'bg-mat')
+        .attr('fill', BACKGROUND_COLOR)
+        .attr('stroke', GUIDEPOST_MAIN_COLOR)
+        .attr('stroke-width', 1);
+
+    let header = svg.append('g').attr('id', 'guidepost-header');
+    header.append('rect')
+            .attr('width', FULL_SVG_WIDTH)
+            .attr('height', HEADER_HEIGHT)
+            .attr('fill', GUIDEPOST_MAIN_COLOR);
+
+    header.append('text')
+            .text('Guidepost')
+            .attr('transform', `translate(${10}, ${HEADER_HEIGHT/2})`)
+            .attr('font-size', '14pt')
+            .attr('dominant-baseline', 'middle');
+    
 
     let validator = new Validator(svg, data, var_specs);
-    let is_valid = validator.validate();
 
-    if(is_valid){
-        let jsmodel = new JSModel(data, var_specs, model);
+    if(validator.validate()){
+        let jsmodel = new JSModel(data, var_specs, _summary_stats, model);
+        let config_grp = svg.append('g')
+                            .attr('class','configs_grp')
+                            .attr('transform', `translate(${0},${HEADER_HEIGHT})`);
+        let config_interface = new ConfigurationInterface(jsmodel, config_grp);
         create_views(jsmodel, svg);
     }
 
     model.on("change:vis_configs", ()=>{
-
-        if(first_text){
-            first_text.remove();
-            first_text=null;
-        }
-
-        var_specs = model.get("vis_configs");
-        data = model.get("_vis_data");
-
-        validator.var_specs = var_specs;
-        validator.data = data;
-        is_valid = validator.validate();
-
-        if(is_valid){
-            let jsmodel = new JSModel(data, var_specs, model);
-            create_views(jsmodel, svg);
-        }
+        svg.selectAll("*").remove();
+        reload_vis(model,validator,svg);
     })
 
     model.on("change:_vis_data", ()=>{
-
-        if(first_text){
-            first_text.remove();
-            first_text=null;
-        }
-
-        data = model.get("_vis_data");
-
-        validator.data = data;
-        is_valid = validator.validate();
-        
-        if(is_valid){
-            let jsmodel = new JSModel(data, var_specs, model);
-            create_views(jsmodel, svg);
-        }
+        svg.selectAll("*").remove();
+        reload_vis(model,validator,svg);
     })
 
 }
