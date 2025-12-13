@@ -15,7 +15,6 @@ Hypothes outputs should conform to the grammar specified below:
     attr :- string
     const :- number
 
-
 In this grammar, a hypothesis (hyp) is defined with expressions (expr). An expression can be a data attribute (attr) such as sales, a constant (in this case, a number), or a function (func) over another expression.
 
 Since the evaluation of a hypothesis results in a binary true or false, the operator (op) is limited to binary relations (such as >, <, =, etc.). The list of functions for a hypothesis grammar needs to be preregistered, similar to registering a user-defined function in a SQL database. For simplicity, we assume that the list of functions includes the typical aggregation (such as AVG, SUM, MIN, etc.) and analytic functions (such as CORR for correlation, STDDEV for standard deviation, etc.) that are commonly supported by SQL databases.
@@ -72,6 +71,7 @@ If the user does not specify the number of hypotheses to be returned, ONLY retur
 Please format your response as a JSON array of objects with the following keys:
 - "hypothesis": The formal hypothesis string following the grammar specified above.
 - "natural_language": A brief natural language description of the hypothesis.
+- "assumptions": A list of strings which describe each assumption you had to make when building the hypothesis because the prompt was not specific enough.
 
 
 `;
@@ -234,11 +234,16 @@ If a particular hypothesis cannot be directly translated into a code snippet due
 The input will be a JSON array of objects with the following keys:
     - "hypothesis": The formal hypothesis string following the grammar specified above.
     - "natural_language": A brief natural language description of the hypothesis.
+    - "assumptions" : A list of strings describing any assumptions made when crafting the hypothesis
 
-Your output should be a nicely formatted JSON array of objects with the following keys.:
-- "natural_language": The same natural language description of the hypothesis you recieved.
-- "code_snippet": The Python code snippet as a string that evaluates the hypothesis. Please enclose this in a function that accepts 'df' as an argument and returns the result.
-- "explanation": A brief explanation of how the code works.
+Your output should be a nicely formatted JSON object with the following keys:
+- "response": A short natural language response notifying the user that their hypotheses have been generated and letting them know you are available for questions.
+- "hypotheses": array of objects with the following keys:
+    - "natural_language": The same natural language description of the hypothesis you recieved.
+    - "code_snippet": The Python code snippet as a string that evaluates the hypothesis. Please enclose this in a function that accepts 'df' as an argument and returns the result.
+    - "explanation": A brief explanation of how the code works.
+    - "assumptions": The same list of assumptions made when crafting the hypothesis
+
 
 `
 

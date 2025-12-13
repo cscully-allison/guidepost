@@ -185,11 +185,14 @@ class ChatInterface{
                 console.log("HYP RESPONSE:", llmResponse);
                 llmResponse = await self.code_agent.queryLLM(llmResponse);
 
-                console.log("FULL RESP:", llmResponse.content);
+                console.log("Code RESPONSE:", llmResponse);
+                let resp_content = JSON.parse(llmResponse.content)
+                // let resp_content = `{\n  "response": "Your hypotheses have been generated. I’ve provided Python code snippets that evaluate each hypothesis using a pandas DataFrame named 'df'. If you have questions or need adjustments, feel free to ask.",\n  "hypotheses": [\n    {\n      "natural_language": "There is a negative correlation between memory efficiency and average power consumption across all jobs.",\n      "code_snippet": "import pandas as pd\\n\\ndef evaluate(df):\\n    # Compute Pearson correlation between avg_mem_eff and avg_power across all jobs\\n    corr = df['avg_mem_eff'].corr(df['avg_power'])\\n    # Return True if correlation is less than -0.3\\n    return corr < -0.3\\n",\n      "explanation": "The snippet computes the Pearson correlation between the two per-job metrics avg_mem_eff and avg_power across all rows in df and checks if it is below -0.3.",\n      "assumptions": "avg_mem_eff and avg_power are per-job metrics present as columns in df. There are no (or properly handled) missing values in these columns."\n    },\n    {\n      "natural_language": "Quantum Espresso jobs have higher average memory efficiency than all other job types.",\n      "code_snippet": "import pandas as pd\\n\\ndef evaluate(df):\\n    # Average memory efficiency for Quantum Espresso jobs\\n    avg_qe = df[df['job_type'] == 'quantum-espresso']['avg_mem_eff'].mean()\\n    # Average memory efficiency for all other jobs\\n    avg_other = df[df['job_type'] != 'quantum-espresso']['avg_mem_eff'].mean()\\n    # Return True if QE average is greater than others\\n    return avg_qe > avg_other\\n",\n      "explanation": "The snippet filters the DataFrame by job_type to compute the mean of avg_mem_eff for Quantum Espresso and for all other jobs, then compares the two means.",\n      "assumptions": "avg_mem_eff is a valid measure of memory efficiency and present for all job types. The predicate correctly partitions data by job_type."\n    },\n    {\n      "natural_language": "Among Quantum Espresso jobs, memory efficiency and power usage are strongly negatively correlated.",\n      "code_snippet": "import pandas as pd\\n\\ndef evaluate(df):\\n    # Subset to Quantum Espresso jobs\\n    sub = df[df['job_type'] == 'quantum-espresso']\\n    # Correlation between avg_mem_eff and avg_power within this subset\\n    corr = sub['avg_mem_eff'].corr(sub['avg_power'])\\n    # Return True if correlation is less than -0.5\\n    return corr < -0.5\\n",\n      "explanation": "The snippet filters to Quantum Espresso jobs, computes the correlation between avg_mem_eff and avg_power within that subset, and checks if it is below -0.5.",\n      "assumptions": "Predicates correctly filter to Quantum Espresso jobs. There are enough samples to estimate correlation reliably."\n    }\n  ]\n}`
+                // resp_content = JSON.parse(resp_content)
 
                 // const llmResponse = "[\n  {\n    \"natural_language\": \"Is the average wallclock time of jobs submitted by user 'kwangrae' greater than 1 hour?\",\n    \"code_snippet\": \"import pandas as pd\\n\\n# Filter for the specific user\\nfiltered_df = df[df['user'] == 'kwangrae']\\n\\n# Compute the average wallclock duration\\naverage_wallclock = filtered_df['wallclock_req_seconds'].mean()\\n\\n# Compare against 1 hour (3600 seconds)\\nresult = average_wallclock > 3600\",\n    \"explanation\": \"The snippet filters the data to only include jobs submitted by user 'kwangrae', computes the mean of the wallclock_req_seconds column, and checks if that mean exceeds 3600 seconds (1 hour).\"\n  },\n  {\n    \"natural_language\": \"Is there a positive correlation between power usage (avg_power) and wallclock duration (wallclock_req_seconds) across jobs?\",\n    \"code_snippet\": \"import pandas as pd\\n\\n# Use only rows with non-missing values in both columns\\nvalid = df[['avg_power', 'wallclock_req_seconds']].dropna()\\n\\n# Compute the Pearson correlation between avg_power and wallclock_req_seconds\\ncorrelation = valid['avg_power'].corr(valid['wallclock_req_seconds'])\\nresult = correlation > 0\",\n    \"explanation\": \"The snippet removes rows with missing data for the two variables, computes the Pearson correlation between avg_power and wallclock_req_seconds, and checks if the correlation is positive.\"\n  }\n]";
                 
-                self.model.update_response(JSON.parse(llmResponse.content));
+                self.model.update_response(resp_content['hypotheses']);
 
                 d3.select(this).attr('disabled', null);
 
@@ -200,7 +203,7 @@ class ChatInterface{
                 const llmMsgElem = document.createElement("div");
                 llmMsgElem.style.textAlign = "left";
                 llmMsgElem.style.marginBottom = "5px";
-                llmMsgElem.textContent = `LLM: ${"I made some hypotheses for you. They are in the adjacent window."}`;
+                llmMsgElem.textContent = `LLM: ${resp_content['response']}`;
                 messagesDiv.appendChild(llmMsgElem);
 
                 // Scroll to bottom
@@ -322,21 +325,35 @@ class CodeDisplayInterface{
                          .html(d=>{return d.natural_language}); 
                     
                     let code_display_grp = response_grp.append('g').attr('class', 'code-grp');
+                    
+                    let container = code_display_grp.append('div')
+                        .attr('class', 'chat-text-code-container')
+                        .style('background-color', '#fff')
+                        .style('border', '1px solid #ddd')
+                        .style('padding', '10px')
+                        .style('margin', '10px 0')
+                        .style('white-space', 'pre-wrap')
+                        .style('font-family', 'monospace')
+                        .style('font-size', '12px');
 
-                    code_display_grp.append('div')
+                    container.append('div')
                         .attr('class', 'chat-text-code')
                         .selectAll('p')
                         .data(d => d.code_snippet.split('\n'))
                         .join('p')
                         .text(line => line);
-                    
-                    // code_display_grp.append('div')
-                    //      .attr('class', 'chat-text')
-                    //      .html(d=>{return d.code_snippet});
 
                     response_grp.append('div')
                         .attr('class', 'chat-text')
                         .html(d=>{return d.explanation});
+
+                    
+                    response_grp.append('div')
+                        .attr('class', 'assumptions-list')
+                         .selectAll('p')
+                        .data(d => d.assumptions)
+                        .join('p')
+                        .text((line,i) => `${i+1}. ${line}`);
 
                     response_grp.append('br');
                     response_grp.append('br');
@@ -353,7 +370,7 @@ function render({model, el}){
     model.save_changes();
 
 
-    let svg = d3.select(el).append('svg').attr('width', 900).attr('height', 300) ;
+    let svg = d3.select(el).append('svg').attr('width', 900).attr('height', 900) ;
     svg.style("border", "1px solid black");
     
     
