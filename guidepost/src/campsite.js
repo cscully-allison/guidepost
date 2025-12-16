@@ -366,12 +366,13 @@ class CodeDisplayInterface{
 
 function render({model, el}){
     let data = model.get("_summary_stats");
-    console.log("Breeep BOOP render called with data:", model.get("_vis_data"));
     model.save_changes();
 
 
-    let svg = d3.select(el).append('svg').attr('width', 900).attr('height', 900) ;
+    let svg = d3.select(el).append('svg').attr('width', 900).attr('height', 400) ;
     svg.style("border", "1px solid black");
+
+    //
     
     
 

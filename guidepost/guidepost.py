@@ -13,7 +13,8 @@ class Guidepost(anywidget.AnyWidget):
     records = None
     _vis_data = traitlets.Dict({}).tag(sync=True)
 
-    vis_configs = traitlets.Dict({}).tag(sync=True)
+    vis_configs = None
+    _vis_configs = traitlets.Unicode("{}").tag(sync=True)
     cached_records_df = None
     
     selected_records = traitlets.Unicode("[]").tag(sync=True)
@@ -23,7 +24,15 @@ class Guidepost(anywidget.AnyWidget):
     _summary_stats = traitlets.Dict({}).tag(sync=True)
 
     suppress_warnings = False
+
+    @property
+    def vis_configs(self):
+        return self._vis_configs
     
+    @vis_configs.setter
+    def vis_configs(self, config_dict):
+        self._vis_configs = json.dumps(config_dict)
+
     @property
     def records(self):
         return self._vis_data

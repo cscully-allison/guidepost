@@ -153,7 +153,9 @@ def extract_summary_statistics(o_df):
                     "25%": None if ser.count() == 0 else float(ser.quantile(0.25)),
                     "50%": None if ser.count() == 0 else float(ser.quantile(0.5)),
                     "75%": None if ser.count() == 0 else float(ser.quantile(0.75)),
+                    "IQR": None if ser.count() == 0 else float(ser.quantile(0.75) - ser.quantile(0.25)),
                     "max": None if ser.count() == 0 else float(ser.max()),
+                    "var": None if ser.count() == 0 else float(ser.var())
                 })
             else:
                 # categorical / ordinal: top categories and frequencies
