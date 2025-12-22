@@ -25,14 +25,15 @@ class ConfigurationInterface{
         this.initial_render();
     }
 
-    createDropdown(options, onChangeCallback, title) {
+    createDropdown(config, onChangeCallback) {
+        const self = this;
         const dropdownGroup = this.parent.append('g')
             .attr('class', 'dropdown-group')
             .attr('transform', `translate(${this.dropdown_cum_l_offset}, ${this.dropdown_cum_t_offset})`);
 
         
         dropdownGroup.append('text')
-                    .text(title)
+                    .text(config.title)
 
         const dropdown = dropdownGroup.append('foreignObject')
             .attr('transform', `translate(${0},${15})`)
@@ -46,12 +47,22 @@ class ConfigurationInterface{
                 onChangeCallback(selectedValue);
             });
 
-        dropdown.selectAll('option')
-            .data(options)
+        let options = dropdown.selectAll('option')
+            .data(config.options)
             .enter()
             .append('xhtml:option')
             .attr('value', d => d)
-            .text(d => d);
+            .text(d => d)
+        
+        options.each(function(d, i){
+            // console.log(this, d, i);
+            if(self.model.vars[config.name] == d){
+                d3.select(this).attr('selected', 'true');
+            }
+            else{
+                d3.select(this).attr('selected', null)
+            }
+        });        
 
 
         this.dropdown_cum_l_offset += this.dropdown_w + 10;
@@ -87,9 +98,9 @@ class ConfigurationInterface{
             .text('Configurations')
             .attr('transform', `translate(${10},${this.title_padding})`)
             .attr('font-size', '13pt')
-
+        
         for(let config of valid_configs){
-            this.createDropdown(config.options, 
+            this.createDropdown(config, 
                                 (v)=>{
                                     let vis_configs = self.model.vars
                                     vis_configs[config.name] = v;
@@ -100,8 +111,7 @@ class ConfigurationInterface{
                                     console.log("SELECTION MADE", vis_configs, self.anywidget_model);
 
                                     console.log(self.anywidget_model.get('_vis_configs'));
-                                }, 
-                                config['human_readable'])
+                                })
         }
         
         // this.parent;

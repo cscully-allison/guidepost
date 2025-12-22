@@ -9,7 +9,6 @@ import { Histogram } from "./guidepost/histogram";
 import { CategoricalBarChart } from "./guidepost/barchart";
 import { Legend } from "./guidepost/legend";
 import { ConfigurationInterface } from "./guidepost/config_interface";
-import { mode, partition, stackOrderNone } from "d3";
 
 
 
@@ -116,6 +115,7 @@ export default async () => {
 
             header.append('text')
                     .text('Guidepost')
+                    .attr('fill', '#ffffff')
                     .attr('transform', `translate(${10}, ${HEADER_HEIGHT/2})`)
                     .attr('font-size', '14pt')
                     .attr('dominant-baseline', 'middle');
@@ -143,14 +143,6 @@ export default async () => {
             reload_vis(model,extra_state.svg, extra_state.validator);
         })
 
-        model.on("change:selected_records", ()=>{
-            console.log("SELECTED UPDATED")
-        })
-
-        model.on("msg:custom", (v)=>{
-            console.log("FUCKING HAPPEND","test worked");
-        })
-
         return () => {
         // Optional: Called when the widget is destroyed.
         } 
@@ -158,8 +150,13 @@ export default async () => {
     render({ model, el }) {
         // Render the widget's view into the el HTMLElement.
         let data = model.get("_vis_data");
-        let vis_configs = JSON.parse(model.get("_vis_configs"));
         let _summary_stats = model.get("_summary_stats");
+        let vis_configs = JSON.parse(model.get("_vis_configs"));
+
+        if(Object.entries(vis_configs).length <= 0){
+            let option_configs = globals.load_smart_default_configs(_summary_stats);
+            console.log(option_configs);
+        }
 
         // console.log("INITIAL RENDER CALL", vis_configs)
 

@@ -1,5 +1,5 @@
 import * as d3 from "https://esm.sh/d3@7";
-import { num_rows, num_cols } from "./consts";
+import { num_rows, num_cols, VALID_CONFIG_FIELDS } from "./consts";
 
 class JSModel{
     constructor(data, vars, feature_summary_stats, anywidget_model){
@@ -36,53 +36,7 @@ class JSModel{
             };
         }
 
-        this.valid_config_fields = [
-            {'name':'facet_by', 
-             'human_readable': 'Group By', 
-             'valid_semantic_data_types':[
-                'categorical'
-            ],
-            'options':[]},
-            {'name':'x', 
-             'human_readable': 'X Axis Variable', 
-             'valid_semantic_data_types':[
-                'continuous',
-                'ordinal'
-            ],
-            'options':[]},
-            {'name':'y', 
-             'human_readable': 'Y Axis Variable', 
-             'valid_semantic_data_types':[
-                'continuous',
-                'ordinal'
-            ],
-            'options':[]},
-            {'name':'color', 
-             'human_readable': 'Color Variable', 
-             'valid_semantic_data_types':[
-                'continuous',
-                'ordinal'
-            ],
-            'options':[]},
-            {'name':'color_agg', 
-             'human_readable': 'Color Aggregation Method', 
-             'valid_semantic_data_types':[
-                'categorical'
-             ],
-             'options': [
-                'avg',
-                'median',
-                'max',
-                'min',
-                'count'
-            ]},
-            {'name':'categorical',
-             'human_readable': 'Categorical Bar Chart', 
-             'valid_semantic_data_types':[
-                'categorical'
-            ],
-            'options':[]}
-        ]
+        this.valid_config_fields = VALID_CONFIG_FIELDS;
 
         //faceted derived data
         this.faceted_sum_stats = {};

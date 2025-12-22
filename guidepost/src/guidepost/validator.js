@@ -105,20 +105,20 @@ class Validator{
 
         //attempt to resolve a missing facet_by
         if(!this.vis_configs.hasOwnProperty('facet_by')){
-            if (this.data.hasOwnProperty('partition')) {
-                this.vis_configs['facet_by'] = 'partition';
-            } else if (this.data.hasOwnProperty('queue')) {
-                this.vis_configs['facet_by'] = 'queue';
-            } else {
-                missing.push({ key: 'facet_by', value: '', message: `Configuration Error: No column was selected to partition the data into and no "queue" or "partition" column was found in the dataset. 
-                    Please specify the "facet_by" configuration and a categorical column on your data.` });
-            }
+            // if (this.data.hasOwnProperty('partition')) {
+            //     this.vis_configs['facet_by'] = 'partition';
+            // } else if (this.data.hasOwnProperty('queue')) {
+            //     this.vis_configs['facet_by'] = 'queue';
+            // } else {
+            missing.push({ key: 'facet_by', value: '', message: `Configuration Error: No column was selected to partition the data into and no "queue" or "partition" column was found in the dataset. 
+                Please specify the "facet_by" configuration and a categorical column on your data.` });
+            // }
         }
 
         //set color_agg to average by default
-        if(!this.vis_configs.hasOwnProperty('color_agg')){
-            this.vis_configs.color_agg = 'avg';
-        }
+        // if(!this.vis_configs.hasOwnProperty('color_agg')){
+        //     this.vis_configs.color_agg = 'avg';
+        // }
 
 
         return missing;

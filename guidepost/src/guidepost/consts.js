@@ -72,7 +72,7 @@ export const RICH_BLUE = 'rgb(32, 61, 192)';
 export const TAN = 'rgb(215, 194, 191)';
 export const RICH_TAN = 'rgb(180, 144, 139)';
 
-export const GUIDEPOST_MAIN_COLOR = '#aec3d1e8'
+export const GUIDEPOST_MAIN_COLOR = '#85848de8'
 export const BACKGROUND_COLOR = '#e3e6ebea';
 
 export let draw_width = OVERVIEW_LAYOUT.width-2*OVERVIEW_LAYOUT.inner_padding;
@@ -80,3 +80,82 @@ export let draw_height = OVERVIEW_LAYOUT.height - 2*OVERVIEW_LAYOUT.inner_paddin
 export let total_hist_height = HISTOGRAM_LAYOUT.height + HISTOGRAM_LAYOUT.outer_margin;
 export let zoom_factor_h = 3;
 export let zoom_factor_v = 10;
+
+export const VALID_CONFIG_FIELDS = [
+            {'name':'facet_by', 
+             'human_readable': 'Group By', 
+             'valid_semantic_data_types':[
+                'categorical'
+            ],
+            'options':[]},
+            {'name':'x', 
+             'human_readable': 'X Axis Variable', 
+             'valid_semantic_data_types':[
+                'continuous',
+                'ordinal'
+            ],
+            'options':[]},
+            {'name':'y', 
+             'human_readable': 'Y Axis Variable', 
+             'valid_semantic_data_types':[
+                'continuous',
+                'ordinal'
+            ],
+            'options':[]},
+            {'name':'color', 
+             'human_readable': 'Color Variable', 
+             'valid_semantic_data_types':[
+                'continuous',
+                'ordinal'
+            ],
+            'options':[]},
+            {'name':'color_agg', 
+             'human_readable': 'Color Aggregation Method', 
+             'valid_semantic_data_types':[
+                'categorical'
+             ],
+             'options': [
+                'avg',
+                'median',
+                'max',
+                'min',
+                'count'
+            ]},
+            {'name':'categorical',
+             'human_readable': 'Categorical Bar Chart', 
+             'valid_semantic_data_types':[
+                'categorical'
+            ],
+            'options':[]}
+        ]
+
+
+function retrieve_options_from_data(sum_stats){
+        let local_config_fields = JSON.parse(JSON.stringify(VALID_CONFIG_FIELDS));
+
+        let semantic_feature_map = {
+        'categorical': [],
+        'ordinal':[],
+        'continuous': []
+        }
+
+        for(let feature in sum_stats){
+            semantic_feature_map[sum_stats[feature]['semantic_type']].push(feature)
+        }
+
+        for(let config in local_config_fields){
+            let potential_options = [];
+            if(!local_config_fields[config]['name'].includes('color_agg')){
+                for(let dt of local_config_fields[config]['valid_semantic_data_types']){
+                    potential_options = potential_options.concat(semantic_feature_map[dt])
+                }
+                local_config_fields[config]['options'] = potential_options;
+            }  
+        }
+
+    return local_config_fields;
+}
+
+export function load_smart_default_configs(sum_stats){
+    return retrieve_options_from_data(sum_stats);
+}

@@ -213,27 +213,28 @@ class ChatInterface{
         const loading = chatGroup.append("g")
             .attr('id', 'loading')
             .attr('transform',`translate(${0}, ${0})`);
-            
+        
+        let dots = [];
         for(let x=0; x<3; x++){
-            loading.append("circle")
+            let dot = loading.append("circle")
                     .attr("class", "loading-dot")
                     .attr("cx", 0 + x * 30)
                     .attr("cy", 0)
                     .attr("r", 8)
                     .attr("fill", "grey");
-
-            anime({
-                targets: '.loading-dot',
-                translateY: [
-                    { value: -10, duration: 500 },
-                    { value: 0, duration: 500 }
-                ],
-                easing: 'easeInOutSine',
-                delay: anime.stagger(200), // Delay each dot animation
-                loop: true
-            });
-
+            dots.push(dot.node())
         }
+
+        anime({
+            targets: dots,
+            translateY: [
+                { value: -10, duration: 500 },
+                { value: 0, duration: 500 }
+            ],
+            easing: 'easeInOutSine',
+            delay: anime.stagger(200), // Delay each dot animation
+            loop: true
+        });
         
         loading.attr('visibility', 'hidden');
         

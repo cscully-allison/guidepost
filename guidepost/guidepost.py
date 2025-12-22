@@ -27,7 +27,7 @@ class Guidepost(anywidget.AnyWidget):
 
     @property
     def vis_configs(self):
-        return self._vis_configs
+        return json.loads(self._vis_configs)
     
     @vis_configs.setter
     def vis_configs(self, config_dict):
