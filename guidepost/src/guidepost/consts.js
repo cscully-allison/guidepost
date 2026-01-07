@@ -1,10 +1,8 @@
 //layout vars
-export const FACET_LAYOUT = {
-    outer_margin: 30
-}
+
 
 export const OVERVIEW_LAYOUT = {
-    width: 1000,
+    width: 900,
     height: 300,
     outer_margin: 10,
     inner_padding: 30
@@ -22,14 +20,15 @@ export const VERT_HISTOGRAM_LAYOUT = {
     width: 200,
     height: OVERVIEW_LAYOUT.height,
     outer_margin: 10,
+    right_padding: 30,
     inner_padding: 0
 }
 
 export const CAT_HISTOGRAM_LAYOUT = {
-    width: VERT_HISTOGRAM_LAYOUT.width+20,
-    height: HISTOGRAM_LAYOUT.height,
+    width: VERT_HISTOGRAM_LAYOUT.width,
+    height: 175,
     outer_margin: 0,
-    inner_padding: 30,
+    inner_padding: 10,
     top_padding: 45,
     left_padding: 0,
     bottom_title_margin: 25
@@ -51,7 +50,14 @@ export const CONFIGURATION_LAYOUT = {
 }
 
 export const VIS_HEADER_HEIGHT = 30;
-export const HEADER_HEIGHT = 50;
+export const HEADER_HEIGHT = 30;
+let bottom_padding = 20;
+
+export const FACET_LAYOUT = {
+    bottom_padding: bottom_padding,
+    outer_margin: 30,
+    height: OVERVIEW_LAYOUT.height + CAT_HISTOGRAM_LAYOUT.height + (2 * OVERVIEW_LAYOUT.outer_margin) + (2 * CAT_HISTOGRAM_LAYOUT.outer_margin) + bottom_padding
+}
 
 export const FULL_SVG_WIDTH = OVERVIEW_LAYOUT.width + (2 * OVERVIEW_LAYOUT.outer_margin) + (VERT_HISTOGRAM_LAYOUT.width+(2*VERT_HISTOGRAM_LAYOUT.outer_margin)) + LEGEND_LAYOUT.width
 
@@ -69,8 +75,11 @@ export const SHARED_X_SCALE = false
 export const BLUE = 'rgba(32, 61, 192, 0.7)';
 export const RICH_BLUE = 'rgb(32, 61, 192)';
 
-export const TAN = 'rgb(215, 194, 191)';
-export const RICH_TAN = 'rgb(180, 144, 139)';
+export const TAN = 'rgba(211, 175, 168, 0.86)';
+export const RICH_TAN = 'rgba(242, 156, 145, 1)';
+
+export const LIGHT_BLUE = 'rgba(201, 206, 225, 0.87)';
+export const DEEP_LIGHT_BLUE = 'rgba(142, 155, 216, 1)';
 
 export const GUIDEPOST_MAIN_COLOR = '#85848de8'
 export const BACKGROUND_COLOR = '#e3e6ebea';

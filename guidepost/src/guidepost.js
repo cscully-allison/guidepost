@@ -42,6 +42,8 @@ export default async () => {
     };
   
     function create_views(model, svg){
+        let running_view_height = 0;
+        let max_width = FULL_SVG_WIDTH;
 
         // let config_interface = new ConfigurationInterface(model, parent);
         let vis_group = svg.append('g')
@@ -63,14 +65,18 @@ export default async () => {
         for(let i in model.facets){
             let parent = vis_group.append('g')
                             .attr('class', 'faceted_view')
-                            .attr('transform', `translate(${OVERVIEW_LAYOUT.outer_margin},${(OVERVIEW_LAYOUT.height * i) + ((FACET_LAYOUT.outer_margin * i) + (total_hist_height*i))+ VIS_HEADER_HEIGHT})`)
+                            .attr('transform', `translate(${OVERVIEW_LAYOUT.outer_margin},${(FACET_LAYOUT.height * i) + (i ? 0 : FACET_LAYOUT.outer_margin) + VIS_HEADER_HEIGHT})`)
                             .attr('width', OVERVIEW_LAYOUT.width)
-                            .attr('height', FACET_LAYOUT.height + HISTOGRAM_LAYOUT.height);
+                            .attr('height', FACET_LAYOUT.height);
+            
+            let compositional_rect = parent.append('rect')
+                .attr('x', 0)
+                .attr('y', 0);
 
                     
             let h_histogram = new Histogram(model, parent, model.facets[i], HISTOGRAM_LAYOUT.height, HISTOGRAM_LAYOUT.width, "bottom");
             let v_histogram = new Histogram(model, parent, model.facets[i], VERT_HISTOGRAM_LAYOUT.height, VERT_HISTOGRAM_LAYOUT.width, "right");
-            let cat_histogram = new CategoricalBarChart(model, parent, model.facets[i], CAT_HISTOGRAM_LAYOUT.height, CAT_HISTOGRAM_LAYOUT.width, "bottom");
+            let cat_histogram = new CategoricalBarChart(model, parent, model.facets[i], CAT_HISTOGRAM_LAYOUT.height, CAT_HISTOGRAM_LAYOUT.width, "right");
             let heatmap = new Heatmap(model, parent, model.facets[i], OVERVIEW_LAYOUT.height, OVERVIEW_LAYOUT.width, num_rows);
             let legend = new Legend(model, parent, model.facets[i], heatmap.scale_color, LEGEND_LAYOUT.width, LEGEND_LAYOUT.height);
                 
@@ -85,13 +91,30 @@ export default async () => {
             model.add_view(heatmap.id_token,heatmap);
             model.add_view(legend.id_token, legend);
 
+            let compositional_rect_bbox = parent.node().getBBox();            
+            running_view_height += compositional_rect_bbox.height + FACET_LAYOUT.outer_margin + FACET_LAYOUT.bottom_padding;
+            max_width = Math.max(max_width, compositional_rect_bbox.width+HISTOGRAM_LAYOUT.outer_margin);
+
+
+            compositional_rect.attr('width', max_width)
+                .attr('height', compositional_rect_bbox.height+FACET_LAYOUT.bottom_padding)
+                .attr('fill', 'white')
+                .attr('stroke', 'black');
         }
 
-        svg.select('#bg-mat').attr('height', (OVERVIEW_LAYOUT.height * model.facets.length) + (FACET_LAYOUT.outer_margin*(model.facets.length+1) + total_hist_height*model.facets.length) + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT)
-            .attr('width', OVERVIEW_LAYOUT.width + (2 * OVERVIEW_LAYOUT.outer_margin) + (VERT_HISTOGRAM_LAYOUT.width+(2*VERT_HISTOGRAM_LAYOUT.outer_margin)) + LEGEND_LAYOUT.width);
+
+        svg.select('#bg-mat').attr('height',  running_view_height + FACET_LAYOUT.outer_margin + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT)
+            .attr('width', FULL_SVG_WIDTH + HISTOGRAM_LAYOUT.outer_margin*2);
         
-        svg.attr('height', (OVERVIEW_LAYOUT.height * model.facets.length) + (FACET_LAYOUT.outer_margin*(model.facets.length+1) + total_hist_height*model.facets.length) + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT)
-            .attr('width', OVERVIEW_LAYOUT.width + (2 * OVERVIEW_LAYOUT.outer_margin) + (VERT_HISTOGRAM_LAYOUT.width+(2*VERT_HISTOGRAM_LAYOUT.outer_margin)) + LEGEND_LAYOUT.width);
+        svg.attr('height', running_view_height + FACET_LAYOUT.outer_margin + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT)
+            .attr('width', FULL_SVG_WIDTH + HISTOGRAM_LAYOUT.outer_margin*2);
+
+
+        // svg.select('#bg-mat').attr('height', (OVERVIEW_LAYOUT.height * model.facets.length) + (FACET_LAYOUT.outer_margin*(model.facets.length+1) + total_hist_height*model.facets.length) + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT)
+        //     .attr('width', OVERVIEW_LAYOUT.width + (2 * OVERVIEW_LAYOUT.outer_margin) + (VERT_HISTOGRAM_LAYOUT.width+(2*VERT_HISTOGRAM_LAYOUT.outer_margin)) + LEGEND_LAYOUT.width);
+        
+        // svg.attr('height', (OVERVIEW_LAYOUT.height * model.facets.length) + (FACET_LAYOUT.outer_margin*(model.facets.length+1) + total_hist_height*model.facets.length) + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT)
+        //     .attr('width', OVERVIEW_LAYOUT.width + (2 * OVERVIEW_LAYOUT.outer_margin) + (VERT_HISTOGRAM_LAYOUT.width+(2*VERT_HISTOGRAM_LAYOUT.outer_margin)) + LEGEND_LAYOUT.width);
 
     }
 
@@ -185,6 +208,7 @@ export default async () => {
                 .text('Guidepost')
                 .attr('transform', `translate(${10}, ${HEADER_HEIGHT/2})`)
                 .attr('font-size', '14pt')
+                .attr('fill', 'rgba(255, 255, 255, 0.85)')
                 .attr('dominant-baseline', 'middle');
         
 

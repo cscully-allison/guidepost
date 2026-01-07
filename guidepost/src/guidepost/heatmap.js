@@ -10,7 +10,7 @@ class Heatmap{
         this.facet = facet;
         this.height = height;
         this.width = width;
-        this.view = parent.append('g').attr('class', 'heatmap');
+        this.view = parent;
         this.num_rows = num_rows;
         this.id_token = `${facet}_heatmap`;
         this.pinned_cols = [];
@@ -99,7 +99,7 @@ class Heatmap{
         let y_offset = Y_VARIABLE_OFFSET + OVERVIEW_LAYOUT.outer_margin;
         
         let view = this.parent.append('g')
-                    .attr('class', 'faceted_view')
+                    .attr('class', 'heatmap')
                     .attr('transform', (d, i)=>`translate(${x_offset},${y_offset})`)
                     .attr('width', this.width)
                     .attr('height', this.height);
@@ -126,7 +126,9 @@ class Heatmap{
             .attr('baseline', 'bottom')
             .attr('anchor', 'middle')
             .attr('x', (draw_width)/2)
-            .attr('y', OVERVIEW_LAYOUT.inner_padding - 10);
+            .attr('y', OVERVIEW_LAYOUT.inner_padding - 18)
+            .style('font-size', '12pt')
+            .style('font-weight', 'bold');
 
 
         view.append('text')

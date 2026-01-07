@@ -9,18 +9,15 @@ class ConfigurationInterface{
 
         this.title_padding = 30;
 
-        this.dropdown_w =  200;
+        this.dropdown_w =  190;
         this.dropdown_h = 30;
 
         this.dropdown_cum_l_offset = 20;
-        this.dropdown_cum_t_offset = 50;
+        this.dropdown_cum_t_offset = 65;
     
         this.max_config_width = OVERVIEW_LAYOUT.width;
 
         this.order = 0;
-
-
-        console.log("Config Variables", this.model.vars);
 
         this.initial_render();
     }
@@ -31,9 +28,13 @@ class ConfigurationInterface{
             .attr('class', 'dropdown-group')
             .attr('transform', `translate(${this.dropdown_cum_l_offset}, ${this.dropdown_cum_t_offset})`);
 
-        
+        const compositional_rect = dropdownGroup.append('rect');
+
+        console.log("Creating dropdown for config:", config['human_readable']);
         dropdownGroup.append('text')
-                    .text(config.title)
+                    .text(config['human_readable'] + ":")
+                    .style('font-size', '11pt')
+                    .attr('text-baseline', 'hanging');
 
         const dropdown = dropdownGroup.append('foreignObject')
             .attr('transform', `translate(${0},${15})`)
@@ -64,6 +65,13 @@ class ConfigurationInterface{
             }
         });        
 
+   
+        compositional_rect.attr('x', -5)
+            .attr('y', -20)
+            .attr('width', dropdownGroup.node().getBBox().width+3)
+            .attr('height', dropdownGroup.node().getBBox().height)
+            .attr('fill', 'white')
+            .attr('stroke', 'black');
 
         this.dropdown_cum_l_offset += this.dropdown_w + 10;
     }

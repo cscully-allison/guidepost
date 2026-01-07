@@ -1,4 +1,5 @@
 import * as d3 from "https://esm.sh/d3@7";
+import { animate, Timeline } from "animejs";
 import { LEGEND_LAYOUT, OVERVIEW_LAYOUT } from "./consts";
 
 class Legend {
@@ -92,20 +93,43 @@ class Legend {
                 .attr('transform', `translate(${LEGEND_LAYOUT.width-LEGEND_LAYOUT.right_padding-40}, ${this.bar_height/2}), rotate(270)`);
         
         legend_grp.append('text')
-            .attr('class', 'num_records')
-            .text(`No. of Records Selected for Export: ${this.model.brushed_data[this.facet].length}`)
-            .attr('transform', `translate(${0}, ${-10})`);;
+            .attr('class', 'num-records-label')
+            .text(`No. of Records Selected for Export:`)
+            .attr('transform', `translate(${0}, ${-20})`);;
+        
+        legend_grp.append('text')
+            .attr('class', 'text-number')
+            .style('font-weight', 'bold')
+            .text(` ${this.model.brushed_data[this.facet].length}`)
+            .attr('transform', `translate(${210}, ${-20})`);
 
         this.legend_grp = legend_grp;
 
+        this.textFlashAnimation = null;
+
     }
+
+    flashText() {
+        if (this.textFlashAnimation) {
+            this.textFlashAnimation.pause();
+        }
+
+        this.textFlashAnimation = animate('.text-number', {
+            keyframes: [
+                { fill: '#ff6200ff', duration: 500, easing: 'easeOutQuad' },
+                { fill: '#444', duration: 800, easing: 'easeOutQuad' }
+            ]
+        });
+    }
+
 
     /**
      * Renders the legend by updating the DOM elements based on the current data.
      */
     render(){
-        this.legend_grp.selectAll('.num_records')
-            .text(`No. of Records Selected for Export: ${this.model.brushed_data[this.facet].length}`);
+        this.legend_grp.selectAll('.text-number')
+            .text(`${this.model.brushed_data[this.facet].length}`);
+        this.flashText();
     }
 
 }
