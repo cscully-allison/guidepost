@@ -108,7 +108,7 @@ class CategoricalBarChart{
         
         this.max_bar_width = 30;
         this.max_bar_height = 30;
-        this.drawable_height = (this.height-2*CAT_HISTOGRAM_LAYOUT.inner_padding);
+        this.drawable_height = (this.height-2*CAT_HISTOGRAM_LAYOUT.inner_padding)+3;
         this.drawable_width = (this.width-2*CAT_HISTOGRAM_LAYOUT.inner_padding);
 
         this.calc_bar_width = Math.min(this.max_bar_width, this.drawable_width/this.n);
@@ -251,7 +251,7 @@ class CategoricalBarChart{
                                                         const bandWidth = self.scale_y.bandwidth();
                                                         // Center bar if calc_bar_width < bandWidth
                                                         const offset = (bandWidth - self.calc_bar_width) / 2;
-                                                        return `translate(${CAT_HISTOGRAM_LAYOUT.inner_padding}, ${tickPos + offset + 3})`;
+                                                        return `translate(${CAT_HISTOGRAM_LAYOUT.inner_padding}, ${tickPos + offset + 1})`;
                                                 });
 
                                 col.append('rect')
