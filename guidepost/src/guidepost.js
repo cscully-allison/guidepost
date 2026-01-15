@@ -91,23 +91,24 @@ export default async () => {
             model.add_view(heatmap.id_token,heatmap);
             model.add_view(legend.id_token, legend);
 
-            let compositional_rect_bbox = parent.node().getBBox();            
+            let compositional_rect_bbox = parent.node().getBBox();
             running_view_height += compositional_rect_bbox.height + FACET_LAYOUT.outer_margin + FACET_LAYOUT.bottom_padding;
             max_width = Math.max(max_width, compositional_rect_bbox.width+HISTOGRAM_LAYOUT.outer_margin);
 
+            console.log(running_view_height, compositional_rect_bbox);
 
             compositional_rect.attr('width', max_width)
-                .attr('height', compositional_rect_bbox.height+FACET_LAYOUT.bottom_padding)
+                .attr('height', Math.max(compositional_rect_bbox.height+FACET_LAYOUT.bottom_padding, 495))
                 .attr('fill', 'white')
                 .attr('stroke', 'black');
         }
 
 
-        svg.select('#bg-mat').attr('height',  running_view_height + FACET_LAYOUT.outer_margin + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT)
-            .attr('width', FULL_SVG_WIDTH + HISTOGRAM_LAYOUT.outer_margin*2);
+        svg.select('#bg-mat').attr('height', Math.max(running_view_height + FACET_LAYOUT.outer_margin + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT, 1787) )
+            .attr('width', max_width + HISTOGRAM_LAYOUT.outer_margin*2);
         
-        svg.attr('height', running_view_height + FACET_LAYOUT.outer_margin + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT)
-            .attr('width', FULL_SVG_WIDTH + HISTOGRAM_LAYOUT.outer_margin*2);
+        svg.attr('height', Math.max(running_view_height + FACET_LAYOUT.outer_margin + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT, 1787))
+            .attr('width', max_width + HISTOGRAM_LAYOUT.outer_margin*2);
 
 
         // svg.select('#bg-mat').attr('height', (OVERVIEW_LAYOUT.height * model.facets.length) + (FACET_LAYOUT.outer_margin*(model.facets.length+1) + total_hist_height*model.facets.length) + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT)
@@ -220,12 +221,14 @@ export default async () => {
 
         if(extra_state.validator.validate()){
             jsmodel = new JSModel(data, vis_configs, _summary_stats, model);
-            create_views(jsmodel, extra_state.svg, extra_state.validator);
+            reload_vis(model, extra_state.svg, extra_state.validator);
+            // create_views(jsmodel, extra_state.svg, extra_state.validator);
         }
 
         let config_grp = extra_state.svg.append('g')
                         .attr('class','configs_grp')
                         .attr('transform', `translate(${0},${HEADER_HEIGHT})`);
+
         let config_interface = new ConfigurationInterface(model, jsmodel, config_grp);
 
         return () => {
