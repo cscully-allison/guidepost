@@ -182,8 +182,10 @@ class ChatInterface{
                 d3.select(this).attr('disabled', true);
 
                 // Query LLM and display response
+                let hypResponse, codeResponse;
                 let assistantResponse = await self.analysis_agent.queryLLM(userMessage);
                 console.log("Analysis Agent Resp:", assistantResponse);
+
 
                 const llmMsgElem = document.createElement("div");
                 llmMsgElem.style.textAlign = "left";
@@ -191,14 +193,15 @@ class ChatInterface{
                 llmMsgElem.textContent = `LLM: ${JSON.parse(assistantResponse.content)['response']}`;
                 messagesDiv.appendChild(llmMsgElem);
 
+                hypResponse = await self.hyp_agent.queryLLM(JSON.parse(assistantResponse.content)['discussion_context']);
+                console.log("Hyp Agent Resp:", JSON.parse(hypResponse.content));
 
-                let hypResponse = await self.hyp_agent.queryLLM(JSON.parse(assistantResponse.content)['discussion_context']);
-                console.log("Hyp Agent Resp:", hypResponse);
-
-                
-                let codeResponse = await self.code_agent.queryLLM(JSON.parse(hypResponse.content));
-                console.log("Hyp Agent Resp:", codeResponse);
+            
+                codeResponse = await self.code_agent.queryLLM(JSON.parse(hypResponse.content)['hypotheses']);
+                console.log("Code Agent Resp:", JSON.parse(codeResponse.content));
                 let resp_content = JSON.parse(codeResponse.content)
+                self.model.update_response(resp_content['hypotheses']);
+
 
 
 
@@ -207,7 +210,6 @@ class ChatInterface{
 
                 // const llmResponse = "[\n  {\n    \"natural_language\": \"Is the average wallclock time of jobs submitted by user 'kwangrae' greater than 1 hour?\",\n    \"code_snippet\": \"import pandas as pd\\n\\n# Filter for the specific user\\nfiltered_df = df[df['user'] == 'kwangrae']\\n\\n# Compute the average wallclock duration\\naverage_wallclock = filtered_df['wallclock_req_seconds'].mean()\\n\\n# Compare against 1 hour (3600 seconds)\\nresult = average_wallclock > 3600\",\n    \"explanation\": \"The snippet filters the data to only include jobs submitted by user 'kwangrae', computes the mean of the wallclock_req_seconds column, and checks if that mean exceeds 3600 seconds (1 hour).\"\n  },\n  {\n    \"natural_language\": \"Is there a positive correlation between power usage (avg_power) and wallclock duration (wallclock_req_seconds) across jobs?\",\n    \"code_snippet\": \"import pandas as pd\\n\\n# Use only rows with non-missing values in both columns\\nvalid = df[['avg_power', 'wallclock_req_seconds']].dropna()\\n\\n# Compute the Pearson correlation between avg_power and wallclock_req_seconds\\ncorrelation = valid['avg_power'].corr(valid['wallclock_req_seconds'])\\nresult = correlation > 0\",\n    \"explanation\": \"The snippet removes rows with missing data for the two variables, computes the Pearson correlation between avg_power and wallclock_req_seconds, and checks if the correlation is positive.\"\n  }\n]";
                 
-                self.model.update_response(resp_content['hypotheses']);
                 // self.model.update_response(resp_content);
 
                 d3.select(this).attr('disabled', null);
