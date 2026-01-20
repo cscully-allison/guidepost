@@ -4,6 +4,7 @@ import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { hypothesis_agent_system_prompt, code_agent_system_prompt, analysis_agent_system_prompt } from "./prompt_engineering"; 
 import {GPTConfig} from "./local_configs";
 import anime from "https://esm.sh/animejs@3.2.1";
+import { stackOrderNone } from "d3";
 
 
 const padding = 10;
@@ -38,6 +39,7 @@ class LLMInterface{
     constructor(model, prompt_text){
         this.model = model;
         this.llm_model = new ChatOpenAI(GPTConfig);
+        this.cached_reponse = null;
 
         this.prompt = ChatPromptTemplate.fromMessages([
             ["system", prompt_text],
@@ -54,6 +56,8 @@ class LLMInterface{
             input: question
         });
 
+        this.cached_reponse = reply.content;
+
         return reply;
     }
 }
@@ -68,9 +72,80 @@ class ChatInterface{
         this.code_agent = agents.code_agent;
         this.analysis_agent = agents.analysis_agent;
 
+        this.communication_stack = [];
+        this.conversation_context = [];
+
         console.log("SUMMARIES", model.data);        
     }   
     
+    async routeMessages(user_msg=null){
+        const self = this;
+
+        //stringified and pushed to conform to existing workflow
+        if(user_msg){
+            this.conversation_context.push(`user:${user_msg}`)
+            user_msg = {context: this.conversation_context, content:user_msg}
+            this.communication_stack.push(JSON.stringify({target: "analysis_agent", source: "user", message: user_msg}));
+        }
+
+        let last_message_raw = this.communication_stack.pop();
+        let last_message = JSON.parse(last_message_raw);
+        let target = last_message.target;
+
+        let response = null;
+        
+        console.log("Most recent message:", last_message);
+
+        switch(target){
+            case "analysis_agent":
+                response = await self.analysis_agent.queryLLM(last_message_raw);
+                this.communication_stack.push(response.content);
+
+                let parsed_response = JSON.parse(response.content);
+
+                console.log("Analysis agent route:", JSON.parse(response.content));
+
+                this.conversation_context.push(`${"analysis_agent"}:${parsed_response.response}`)
+
+                return {
+                    target: parsed_response.target,
+                    response: parsed_response.response
+                }
+            case "hypothesis_agent":
+                
+
+                response = await self.hyp_agent.queryLLM(last_message_raw);
+                this.communication_stack.push(response.content);
+
+                console.log("Hypothesis agent agent route:", JSON.parse(response.content));
+
+                return {
+                    target: JSON.parse(response.content).target,
+                    response: ""
+                };
+            case "code_agent":
+                // console.log("DONT GO HERE");
+                // response = await self.code_agent.queryLLM(last_message['hypotheses']);
+                // this.communication_stack.push(response.content);
+                
+                // console.log("Code agent agent route:", JSON.parse(response.content));
+
+                // return {
+                //     target: JSON.parse(response.content).target,
+                //     response: ""
+                // };
+                break;
+            case "vis_agent":
+                break;
+            defualt:
+                return "";
+                break;
+        }
+
+
+
+
+    }
 
     createChatInterface() {
         const self = this;
@@ -181,37 +256,52 @@ class ChatInterface{
 
                 d3.select(this).attr('disabled', true);
 
-                // Query LLM and display response
-                let hypResponse, codeResponse;
-                let assistantResponse = await self.analysis_agent.queryLLM(userMessage);
-                console.log("Analysis Agent Resp:", assistantResponse);
+                let resp = await self.routeMessages(userMessage);
+                console.log(resp);
 
-
-                const llmMsgElem = document.createElement("div");
+                let llmMsgElem = document.createElement("div");
                 llmMsgElem.style.textAlign = "left";
                 llmMsgElem.style.marginBottom = "5px";
-                llmMsgElem.textContent = `LLM: ${JSON.parse(assistantResponse.content)['response']}`;
+                llmMsgElem.textContent = `LLM: ${resp['response']}`;
                 messagesDiv.appendChild(llmMsgElem);
 
-                hypResponse = await self.hyp_agent.queryLLM(JSON.parse(assistantResponse.content)['discussion_context']);
-                console.log("Hyp Agent Resp:", JSON.parse(hypResponse.content));
+                let i = 0;
+                while(resp.target !== "user" && i < 2){
+                    resp = await self.routeMessages();
+                    console.log(resp.target, resp.response);
+                    i++;
 
-            
-                codeResponse = await self.code_agent.queryLLM(JSON.parse(hypResponse.content)['hypotheses']);
-                console.log("Code Agent Resp:", JSON.parse(codeResponse.content));
-                let resp_content = JSON.parse(codeResponse.content)
-                self.model.update_response(resp_content['hypotheses']);
-
-
-
-
-                // let resp_content = `{\n  "response": "Your hypotheses have been generated. I’ve provided Python code snippets that evaluate each hypothesis using a pandas DataFrame named 'df'. If you have questions or need adjustments, feel free to ask.",\n  "hypotheses": [\n    {\n      "natural_language": "There is a negative correlation between memory efficiency and average power consumption across all jobs.",\n      "code_snippet": "import pandas as pd\\n\\ndef evaluate(df):\\n    # Compute Pearson correlation between avg_mem_eff and avg_power across all jobs\\n    corr = df['avg_mem_eff'].corr(df['avg_power'])\\n    # Return True if correlation is less than -0.3\\n    return corr < -0.3\\n",\n      "explanation": "The snippet computes the Pearson correlation between the two per-job metrics avg_mem_eff and avg_power across all rows in df and checks if it is below -0.3.",\n      "assumptions": "avg_mem_eff and avg_power are per-job metrics present as columns in df. There are no (or properly handled) missing values in these columns."\n    },\n    {\n      "natural_language": "Quantum Espresso jobs have higher average memory efficiency than all other job types.",\n      "code_snippet": "import pandas as pd\\n\\ndef evaluate(df):\\n    # Average memory efficiency for Quantum Espresso jobs\\n    avg_qe = df[df['job_type'] == 'quantum-espresso']['avg_mem_eff'].mean()\\n    # Average memory efficiency for all other jobs\\n    avg_other = df[df['job_type'] != 'quantum-espresso']['avg_mem_eff'].mean()\\n    # Return True if QE average is greater than others\\n    return avg_qe > avg_other\\n",\n      "explanation": "The snippet filters the DataFrame by job_type to compute the mean of avg_mem_eff for Quantum Espresso and for all other jobs, then compares the two means.",\n      "assumptions": "avg_mem_eff is a valid measure of memory efficiency and present for all job types. The predicate correctly partitions data by job_type."\n    },\n    {\n      "natural_language": "Among Quantum Espresso jobs, memory efficiency and power usage are strongly negatively correlated.",\n      "code_snippet": "import pandas as pd\\n\\ndef evaluate(df):\\n    # Subset to Quantum Espresso jobs\\n    sub = df[df['job_type'] == 'quantum-espresso']\\n    # Correlation between avg_mem_eff and avg_power within this subset\\n    corr = sub['avg_mem_eff'].corr(sub['avg_power'])\\n    # Return True if correlation is less than -0.5\\n    return corr < -0.5\\n",\n      "explanation": "The snippet filters to Quantum Espresso jobs, computes the correlation between avg_mem_eff and avg_power within that subset, and checks if it is below -0.5.",\n      "assumptions": "Predicates correctly filter to Quantum Espresso jobs. There are enough samples to estimate correlation reliably."\n    }\n  ]\n}`
-                // resp_content = JSON.parse(resp_content)
-
-                // const llmResponse = "[\n  {\n    \"natural_language\": \"Is the average wallclock time of jobs submitted by user 'kwangrae' greater than 1 hour?\",\n    \"code_snippet\": \"import pandas as pd\\n\\n# Filter for the specific user\\nfiltered_df = df[df['user'] == 'kwangrae']\\n\\n# Compute the average wallclock duration\\naverage_wallclock = filtered_df['wallclock_req_seconds'].mean()\\n\\n# Compare against 1 hour (3600 seconds)\\nresult = average_wallclock > 3600\",\n    \"explanation\": \"The snippet filters the data to only include jobs submitted by user 'kwangrae', computes the mean of the wallclock_req_seconds column, and checks if that mean exceeds 3600 seconds (1 hour).\"\n  },\n  {\n    \"natural_language\": \"Is there a positive correlation between power usage (avg_power) and wallclock duration (wallclock_req_seconds) across jobs?\",\n    \"code_snippet\": \"import pandas as pd\\n\\n# Use only rows with non-missing values in both columns\\nvalid = df[['avg_power', 'wallclock_req_seconds']].dropna()\\n\\n# Compute the Pearson correlation between avg_power and wallclock_req_seconds\\ncorrelation = valid['avg_power'].corr(valid['wallclock_req_seconds'])\\nresult = correlation > 0\",\n    \"explanation\": \"The snippet removes rows with missing data for the two variables, computes the Pearson correlation between avg_power and wallclock_req_seconds, and checks if the correlation is positive.\"\n  }\n]";
+                    if(resp.target && resp.target === "user"){
+                        llmMsgElem = document.createElement("div");
+                        llmMsgElem.style.textAlign = "left";
+                        llmMsgElem.style.marginBottom = "5px";
+                        llmMsgElem.textContent = `LLM: ${resp['response']}`;
+                        messagesDiv.appendChild(llmMsgElem);
+                    }
+                }
                 
-                // self.model.update_response(resp_content);
 
+
+                // // Query LLM and display response
+                // let hypResponse, codeResponse, assistantResponse;
+
+
+                // //here we need routing logic that skips assisstant if target is not user
+                // assistantResponse = await self.analysis_agent.queryLLM(userMessage);
+
+
+                // if(assistantResponse != ){
+                //     hypResponse = await self.hyp_agent.queryLLM(JSON.parse(assistantResponse.content)['discussion_context']);
+                //     console.log("Hyp Agent Resp:", JSON.parse(hypResponse.content));
+
+                
+                //     codeResponse = await self.code_agent.queryLLM(JSON.parse(hypResponse.content)['hypotheses']);
+                //     console.log("Code Agent Resp:", JSON.parse(codeResponse.content));
+                //     let resp_content = JSON.parse(codeResponse.content)
+                //     self.model.update_response(resp_content['hypotheses']);
+                // }
+
+ 
                 d3.select(this).attr('disabled', null);
 
                 messagesDiv.removeChild(placeholder);
