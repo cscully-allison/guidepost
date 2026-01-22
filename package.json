@@ -1,12 +1,18 @@
 {
   "devDependencies": {
+    "@anywidget/types": "^0.2.0",
+    "@types/express": "^5.0.6",
     "mocha": "^11.7.1"
   },
   "dependencies": {
     "@langchain/core": "^1.1.0",
+    "@langchain/langgraph": "^1.1.1",
     "@langchain/openai": "^1.1.3",
-    "anime": "^0.1.2",
-    "animejs": "^4.2.2",
-    "d3": "^7.9.0"
+    "animejs": "^4.3.0",
+    "cors": "^2.8.6",
+    "d3": "^7.9.0",
+    "express": "^5.2.1",
+    "vercel": "^50.4.8",
+    "zod": "^4.3.5"
   }
 }
