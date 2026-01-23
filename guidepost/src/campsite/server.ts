@@ -2,25 +2,32 @@
 import express from "express";
 import cors from "cors";
 import { analysisAssistant, AnalysisStateType } from "./lib/analysisGraph.ts";
-// const PORT = 3000;
+import fs from "fs/promises";
+
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+const logfile = './log.txt';
 
 // In-memory session store
 const sessions = new Map<string, AnalysisStateType>();
 
 let query:number = 0;
 
+
 app.post("/analyze", async (req, res) => {
-    const { sessionId, question } = req.body;
+    const { sessionId, question, dataSummary } = req.body;
     let state: AnalysisStateType;
+
+    // fs.appendFile(logfile, `Call to /analyze: ${JSON.stringify(dataSummary)}\n`);
 
     if (sessions.has(sessionId)) {
         state = sessions.get(sessionId)!;
     } else {
         // New session
         state = {
+            dataSummary: dataSummary,
             initialUserQuestion: question,
             clarifications: [],
             hypothesis: undefined,
@@ -38,6 +45,9 @@ app.post("/analyze", async (req, res) => {
     if(state.waitingForUser){
         state.clarifications.push(question);
     }
+
+    
+    // fs.appendFile(logfile, `Call to /analyze post init: ${JSON.stringify(dataSummary)}\n`);
 
     const result:any = await analysisAssistant.invoke(state);
     sessions.set(sessionId, result); // persist updated state

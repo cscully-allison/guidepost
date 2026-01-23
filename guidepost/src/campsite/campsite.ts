@@ -1,7 +1,7 @@
 import * as d3 from "d3";
 import {animate, stagger} from "animejs";
 import type { AnyModel } from "@anywidget/types";
-import { en } from "zod/locales";
+import e from "express";
 
 const padding = 10;
 
@@ -35,132 +35,6 @@ class CSModel{
 }
 
 
-
-
-
-// class LLMInterface{
-//     llm:ChatOpenAI;
-//     chain:any;
-//     route:any;
-//     analysisAssistant:any;
-
-//     constructor(model:any, prompt_text:any){
-//         this.llm = new ChatOpenAI(GPTConfig);
-
-//         const AnalysisState = z.object({
-//             userQuestion: z.string(),
-//             clarifiedQuestion: z.string().nullable(),
-//             hypothesis: z.string().nullable(),
-//             code: z.string().nullable(),
-//             stage: z.enum(["conversation", "hypothesis", "codegen", "done"])
-//         });
-
-//         type AnalysisStateType = z.infer<typeof AnalysisState>;
-
-//         const conversationNode = async (state: AnalysisStateType) => {
-//             const prompt = `
-//             You are a research assistant.
-
-//             User question:
-//             ${state.userQuestion}
-
-//             If the question is underspecified, rewrite it in a clarified form.
-//             If it is already precise, return it unchanged.
-//             `;
-
-//             const response = await this.llm.invoke(prompt);
-
-//             return {
-//                 clarifiedQuestion: response.content,
-//                 stage: "hypothesis"
-//             };
-//         };
-
-
-//         const hypothesisNode = async (state: AnalysisStateType) => {
-//             const prompt = `
-//             Translate the following research question into a formal,
-//             testable statistical hypothesis.
-
-//             Research question:
-//             ${state.clarifiedQuestion}
-
-//             Return a null and alternative hypothesis.
-//             `;
-
-//             const response = await this.llm.invoke(prompt);
-
-//             return {
-//                 hypothesis: response.content,
-//                 stage: "codegen"
-//             };
-//         };
-
-//         const codegenNode = async (state: AnalysisStateType) => {
-//             const prompt = `
-//                 Generate JavaScript or Python analysis code to test the following hypothesis.
-
-//                 Hypothesis:
-//                 ${state.hypothesis}
-
-//                 Use appropriate statistical methods and include comments.
-//             `;
-
-//             const response = await this.llm.invoke(prompt);
-
-//             return {
-//                 code: response.content,
-//                 stage: "done"
-//             };
-//         };
-
-
-//         const graph = new StateGraph(AnalysisState);
-
-//         graph.addNode("conversation", conversationNode);
-//         graph.addNode("hypothesis", hypothesisNode);
-//         graph.addNode("codegen", codegenNode);
-
-//         graph.setEntryPoint("conversation");
-
-//         graph.addConditionalEdges(
-//         "conversation",
-//         this.route,
-//         {
-//             hypothesis: "hypothesis"
-//         }
-//         );
-
-//         graph.addConditionalEdges(
-//         "hypothesis",
-//         this.route,
-//         {
-//             codegen: "codegen"
-//         }
-//         );
-
-//         graph.addConditionalEdges(
-//         "codegen",
-//         this.route,
-//         {
-//             done: END
-//         }
-//         );
-
-//         this.analysisAssistant = graph.compile();
-//     }   
-
-//     query_llm(){
-//         this.analysisAssistant.invoke({
-//             userQuestion: "Does increasing memory allocation reduce HPC job runtime?",
-//             clarifiedQuestion: null,
-//             hypothesis: null,
-//             code: null,
-//             stage: "conversation"
-//         });
-//     }
-// }
-
 class ChatInterface {
     model: CSModel;
     svg: d3.selection<SVGSVGElement, unknown, HTMLElement, any>;
@@ -177,63 +51,6 @@ class ChatInterface {
         this.createChatInterface();
     }
 
-    // async routeMessages(user_msg: Object | null = null): Promise<{ target: string; response: string } | string> {
-    //     const self = this;
-
-    //     if (user_msg) {
-    //         this.conversation_context.push(`user:${user_msg}`);
-    //         user_msg = { context: this.conversation_context, content: user_msg };
-    //         this.communication_stack.push(
-    //             JSON.stringify({ target: "analysis_agent", source: "user", message: user_msg })
-    //         );
-    //     }
-
-    //     const last_message_raw = this.communication_stack.pop();
-    //     if (!last_message_raw) return "";
-
-    //     const last_message = JSON.parse(last_message_raw);
-    //     const target = last_message.target;
-
-    //     let response: any = null;
-
-    //     console.log("Most recent message:", last_message);
-
-    //     switch (target) {
-    //         case "analysis_agent":
-    //             response = await self.analysis_agent.queryLLM(last_message_raw);
-    //             this.communication_stack.push(response.content);
-
-    //             const parsed_response = JSON.parse(response.content);
-
-    //             console.log("Analysis agent route:", parsed_response);
-
-    //             this.conversation_context.push(`${"analysis_agent"}:${parsed_response.response}`);
-
-    //             return {
-    //                 target: parsed_response.target,
-    //                 response: parsed_response.response,
-    //             };
-    //         case "hypothesis_agent":
-    //             response = await self.hyp_agent.queryLLM(last_message_raw);
-    //             this.communication_stack.push(response.content);
-
-    //             console.log("Hypothesis agent route:", JSON.parse(response.content));
-
-    //             return {
-    //                 target: JSON.parse(response.content).target,
-    //                 response: "",
-    //             };
-    //         case "code_agent":
-    //             // Placeholder for code_agent logic
-    //             break;
-    //         case "vis_agent":
-    //             break;
-    //         default:
-    //             return "";
-    //     }
-
-    //     return "";
-    // }
 
     createChatInterface(): void {
         const self = this;
@@ -280,13 +97,14 @@ class ChatInterface {
         chatGroup
             .append("foreignObject")
             .attr("x", padding * 2)
-            .attr("y", height - padding * 4)
+            .attr("y", height - padding * 6)
             .attr("width", width - 4 * padding)
-            .attr("height", padding * 2)
-            .append("xhtml:input")
-            .attr("type", "text")
+            .attr("height", padding * 4)
+            .append("xhtml:textarea")
+            // .attr("type", "textarea")
+            .attr("wrap", "soft")
             .style("width", `${width - 4 * padding}px`)
-            .style("height", `${padding * 2}px`)
+            .style("height", `${padding * 4}px`)
             .style("font-family", "Arial, sans-serif")
             .style("font-size", "12px")
             .style("border", "1px solid #ccc")
@@ -329,6 +147,7 @@ class ChatInterface {
 
                 d3.select(this_node).attr("disabled", true);
                 
+                console.log("Sending user message to server:", self.model.data);
                 const response = await fetch(self.session_info["endpoint"] + "/analyze", {
                     method: "POST",
                     headers: {
@@ -337,8 +156,9 @@ class ChatInterface {
                     body: JSON.stringify({
                         sessionId: self.session_info["session_id"],
                         question: userMessage,
+                        dataSummary: self.model.data
                     }),
-                }).then(res => {return res.json()});
+                }).then(res => {console.log("wehere?"); return res.json()});
 
                 console.log("Fetch response:", response);
 
@@ -346,11 +166,16 @@ class ChatInterface {
                 // let resp = await self.routeMessages(userMessage);
                 // console.log(resp);
 
-                const llmMsgElem = document.createElement("div");
-                llmMsgElem.style.textAlign = "left";
-                llmMsgElem.style.marginBottom = "5px";
-                llmMsgElem.textContent = `LLM: ${response["userPrompt"]}`;
-                messagesDiv.appendChild(llmMsgElem);
+
+                if (!response["waiting"]) {
+                    this.model.update_response(response);
+                }
+                else{    
+                    d3.select(messagesDiv).append("div")
+                         .style('text-align', "left")
+                         .style('margin-bottom', "10px")
+                         .html(`<strong>LLM Response:</strong><br/><pre style="background-color:#f4f4f4; padding:10px; border:1px solid #ddd;">${response['userPrompt']}</pre>`);
+                }
 
                 d3.select(this_node).attr("disabled", null);
 
@@ -362,16 +187,16 @@ class ChatInterface {
 
         const loading = chatGroup.append("g").attr("id", "loading").attr("transform", `translate(${0}, ${0})`);
 
-        const dots: SVGCircleElement[] = [];
-        for (let x = 0; x < 3; x++) {
-            const dot = loading
-                .append("circle")
-                .attr("class", "loading-dot")
-                .attr("cx", 0 + x * 30)
-                .attr("cy", 0)
-                .attr("r", 8)
-                .attr("fill", "grey");
-            dots.push(dot.node() as SVGCircleElement);
+        let dots = [];
+            for (let x = 0; x < 3; x++) {
+                const dot = loading
+                    .append("circle")
+                    .attr("class", "loading-dot")
+                    .attr("cx", 0 + x * 30)
+                    .attr("cy", 0)
+                    .attr("r", 8)
+                    .attr("fill", "grey");
+                dots.push(dot.node());
         }
 
 
@@ -471,51 +296,18 @@ class CodeDisplayInterface{
         console.log("This model updating in render:", this.model.response);
 
         this.text_area.selectAll('.chat-text')
-            .data(this.model.response, (d:any)=>{this.toHash(d.natural_language)})
+            .data([this.model.response], (d:any)=>{this.toHash(d.hypothesis)})
             .join(
                 (enter:any) => {
-                    let response_grp = enter.append('g').attr('class', 'chat-text');
-                    response_grp.append('div')
-                         .attr('class', 'chat-text-natural')
-                         .html((d:any)=>{return d.natural_language}); 
+                    enter.append("div")
+                         .style('text-align', "left")
+                         .style('margin-bottom', "10px")
+                         .html((d:any)=>{return`<strong>Translated Hypothesis:</strong><br/><pre style="background-color:#f4f4f4; padding:10px; border:1px solid #ddd;">${d.hypothesis}</pre>`});
 
-                    // response_grp.append('div')
-                    //      .attr('class', 'chat-text-hyp')
-                    //      .html(d=>{return d.hypothesis});
-                    
-                    let code_display_grp = response_grp.append('g').attr('class', 'code-grp');
-                    
-                    let container = code_display_grp.append('div')
-                        .attr('class', 'chat-text-code-container')
-                        .style('background-color', '#fff')
-                        .style('border', '1px solid #ddd')
-                        .style('padding', '10px')
-                        .style('margin', '10px 0')
-                        .style('white-space', 'pre-wrap')
-                        .style('font-family', 'monospace')
-                        .style('font-size', '12px');
-
-                    container.append('div')
-                        .attr('class', 'chat-text-code')
-                        .selectAll('p')
-                        .data((d:any) => d.code_snippet.split('\n'))
-                        .join('p')
-                        .text((line:any) => line);
-
-                    response_grp.append('div')
-                        .attr('class', 'chat-text')
-                        .html((d:any)=>{return d.explanation});
-
-                    
-                    response_grp.append('div')
-                        .attr('class', 'assumptions-list')
-                         .selectAll('p')
-                        .data((d:any) => d.assumptions)
-                        .join('p')
-                        .text((line:any,i:any) => `${i+1}. ${line}`);
-
-                    response_grp.append('br');
-                    response_grp.append('br');
+                    enter.append("div")
+                         .style('text-align', "left")
+                         .style('margin-bottom', "10px")
+                         .html((d:any)=>{return`<strong>Generated Code:</strong><br/><pre style="background-color:#f4f4f4; padding:10px; border:1px solid #ddd;">${d.code}</pre>`});
                     },
                 (update:any) => {update},
                 (exit:any) => {exit.remove()}
@@ -554,7 +346,7 @@ export function render({
     .select(el)
     .append("svg")
     .attr("width", 900)
-    .attr("height", 400);
+    .attr("height", 600);
 
   svg.style("border", "1px solid black");
 
