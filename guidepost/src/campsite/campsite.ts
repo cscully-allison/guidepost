@@ -39,6 +39,7 @@ class ChatInterface {
     model: CSModel;
     svg: d3.selection<SVGSVGElement, unknown, HTMLElement, any>;
     session_info: any;
+    awaiting_response: boolean;
 
     constructor(
         model: CSModel,
@@ -49,6 +50,75 @@ class ChatInterface {
         this.svg = svg;
         this.session_info = session_info;
         this.createChatInterface();
+        this.awaiting_response = false;
+    }
+
+    async manageUserTextInput(this_evnt:any): Promise<void> {
+        const self = this;
+        this.awaiting_response = true;
+        d3.select('#send-button').attr("disabled", "true");
+
+        const this_node = this_evnt.currentTarget;
+        const inputBox = document.querySelector(".chat-input") as HTMLInputElement;
+        const messagesDiv = document.querySelector(".chat-messages") as HTMLDivElement;
+        const userMessage = inputBox.value;
+        if (userMessage.trim() === "") return;
+
+        const userMsgElem = document.createElement("div");
+        userMsgElem.style.textAlign = "right";
+        userMsgElem.style.marginBottom = "5px";
+        userMsgElem.textContent = `You: ${userMessage}`;
+        messagesDiv.appendChild(userMsgElem);
+
+        inputBox.value = "";
+        const placeholder = document.createElement("div");
+        placeholder.style.textAlign = "left";
+        placeholder.style.marginBottom = "5px";
+        placeholder.style.height = "40px";
+        messagesDiv.appendChild(placeholder);
+
+        const loading = d3.select("#loading");
+        loading.attr("visibility", "visible");
+
+        
+        console.log("Sending user message to server:", self.model.data);
+        const response = await fetch(self.session_info["endpoint"] + "/analyze", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                sessionId: self.session_info["session_id"],
+                question: userMessage,
+                dataSummary: self.model.data
+            }),
+        }).then(res => {console.log("wehere?"); return res.json()});
+
+        console.log("Fetch response:", response);
+
+
+        // let resp = await self.routeMessages(userMessage);
+        // console.log(resp);
+
+
+        if (!response["waiting"]) {
+            this.model.update_response(response);
+        }
+        else{    
+            d3.select(messagesDiv).append("div")
+                .style('text-align', "left")
+                .style('margin-bottom', "10px")
+                .html(`<strong>LLM Response:</strong><br/><pre style="background-color:#f4f4f4; padding:10px; border:1px solid #ddd;">${response['userPrompt']}</pre>`);
+        }
+
+        d3.select('#send-button').attr("disabled", null);
+
+        messagesDiv.removeChild(placeholder);
+        loading.attr("visibility", "hidden");
+
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+        this.awaiting_response = false;
     }
 
 
@@ -62,7 +132,7 @@ class ChatInterface {
         const dimensions = {
             chatWidth: width - 2 * padding,
             chatHeight: height - 2 * padding,
-            messagesHeight: height - 6 * padding,
+            messagesHeight: height -  8 * padding,
             textAreaWidth: width - 4 * padding,
             inputHeight: padding * 2,
             buttonHeight: buttonHeight,
@@ -88,7 +158,7 @@ class ChatInterface {
             .append("xhtml:div")
             .style("overflow-y", "auto")
             .style("height", `${dimensions.messagesHeight}px`)
-            .style("width", `${dimensions.textAreaWidth - padding}px`)
+            .style("width", `${dimensions.textAreaWidth - 2*padding}px`)
             .style("font-family", "Arial, sans-serif")
             .style("font-size", "12px")
             .style("color", "#333")
@@ -101,7 +171,6 @@ class ChatInterface {
             .attr("width", width - 4 * padding)
             .attr("height", padding * 4)
             .append("xhtml:textarea")
-            // .attr("type", "textarea")
             .attr("wrap", "soft")
             .style("width", `${width - 4 * padding}px`)
             .style("height", `${padding * 4}px`)
@@ -110,7 +179,14 @@ class ChatInterface {
             .style("border", "1px solid #ccc")
             .style("padding", "2px")
             .attr("class", "chat-input")
-            .attr("placeholder", "ex. What can you tell me about my data?");
+            .attr("placeholder", "ex. What can you tell me about my data?")
+            .on("keydown", function (event: KeyboardEvent) {
+                if (event.key === "Enter" && !event.shiftKey && !self.awaiting_response) {
+                    event.preventDefault();
+                    self.manageUserTextInput(event);
+                }
+            });
+
 
         chatGroup
             .append("foreignObject")
@@ -121,69 +197,9 @@ class ChatInterface {
             .append("xhtml:button")
             .style("width", `${width - 4 * padding}px`)
             .style("height", `${buttonHeight}px`)
+            .attr('id', 'send-button')
             .text("Send")
-            .on("click", async (this_evnt:any) => {
-                const this_node = this_evnt.currentTarget;
-                const inputBox = document.querySelector(".chat-input") as HTMLInputElement;
-                const messagesDiv = document.querySelector(".chat-messages") as HTMLDivElement;
-                const userMessage = inputBox.value;
-                if (userMessage.trim() === "") return;
-
-                const userMsgElem = document.createElement("div");
-                userMsgElem.style.textAlign = "right";
-                userMsgElem.style.marginBottom = "5px";
-                userMsgElem.textContent = `You: ${userMessage}`;
-                messagesDiv.appendChild(userMsgElem);
-
-                inputBox.value = "";
-                const placeholder = document.createElement("div");
-                placeholder.style.textAlign = "left";
-                placeholder.style.marginBottom = "5px";
-                placeholder.style.height = "40px";
-                messagesDiv.appendChild(placeholder);
-
-                const loading = d3.select("#loading");
-                loading.attr("visibility", "visible");
-
-                d3.select(this_node).attr("disabled", true);
-                
-                console.log("Sending user message to server:", self.model.data);
-                const response = await fetch(self.session_info["endpoint"] + "/analyze", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        sessionId: self.session_info["session_id"],
-                        question: userMessage,
-                        dataSummary: self.model.data
-                    }),
-                }).then(res => {console.log("wehere?"); return res.json()});
-
-                console.log("Fetch response:", response);
-
-
-                // let resp = await self.routeMessages(userMessage);
-                // console.log(resp);
-
-
-                if (!response["waiting"]) {
-                    this.model.update_response(response);
-                }
-                else{    
-                    d3.select(messagesDiv).append("div")
-                         .style('text-align', "left")
-                         .style('margin-bottom', "10px")
-                         .html(`<strong>LLM Response:</strong><br/><pre style="background-color:#f4f4f4; padding:10px; border:1px solid #ddd;">${response['userPrompt']}</pre>`);
-                }
-
-                d3.select(this_node).attr("disabled", null);
-
-                messagesDiv.removeChild(placeholder);
-                loading.attr("visibility", "hidden");
-
-                messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            });
+            .on("click", self.manageUserTextInput.bind(this));
 
         const loading = chatGroup.append("g").attr("id", "loading").attr("transform", `translate(${0}, ${0})`);
 
@@ -198,7 +214,6 @@ class ChatInterface {
                     .attr("fill", "grey");
                 dots.push(dot.node());
         }
-
 
         animate(dots, {
             translateY: [
