@@ -44,6 +44,8 @@ app.post("/analyze", async (req, res) => {
     //update followup questions while we are waiting
     if(state.waitingForUser){
         state.clarifications.push(question);
+    }else{
+        state.initialUserQuestion = question;
     }
 
     
@@ -60,6 +62,8 @@ app.post("/analyze", async (req, res) => {
         });
     }
 
+    state.clarifications = []; // reset clarifications once we move past that stage
+    state.initialUserQuestion = ""; // update the initial question to the latest
     // Return final result
     return res.json({
         waiting: false,

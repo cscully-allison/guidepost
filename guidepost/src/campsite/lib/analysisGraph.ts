@@ -61,10 +61,16 @@ async function evaluateClarity(original: string, clarifications: Array<string> =
 
 const conversationNode = async (state: AnalysisStateType) => {
   fs.appendFile(logfile, "Conversation Node Start\n");
+  // Ask for a more course evaluation at this stage?
+  // Vaugeness checker?
+  // Asking for confidence level
+  // High, medium, low confidence in how confident you are that this can be translated into working analysis code, poses a meaningful analytical question; even if that question is under 
+  // specified right now
   const clarityScore = await evaluateClarity(state.initialUserQuestion, state.clarifications, state.dataSummary);
   fs.appendFile(logfile, `Clarity Score: ${clarityScore}\n`);
 
   const needsMore = clarityScore < 0.5;
+
 
   if (needsMore) {
     

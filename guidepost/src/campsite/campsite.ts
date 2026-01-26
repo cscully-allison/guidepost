@@ -345,7 +345,7 @@ export function render({
   const svg = d3
     .select(el)
     .append("svg")
-    .attr("width", 900)
+    .attr("width", 1300)
     .attr("height", 600);
 
   svg.style("border", "1px solid black");
