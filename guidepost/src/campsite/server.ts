@@ -1,7 +1,9 @@
 // server.ts
 import express from "express";
 import cors from "cors";
-import { analysisAssistant, AnalysisStateType } from "./lib/analysisGraph.ts";
+import { analysisAssistant} from "./lib/analysisGraph.ts";
+import { AnalysisStateType } from "./utils.ts";
+import { refine } from "zod";
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -28,7 +30,8 @@ app.post("/analyze", async (req, res) => {
             dataSummary: dataSummary,
             initialUserQuestion: question,
             clarifications: [],
-            clarificationQuestions: [],
+            refinementQuestions: [],
+            refinementClarifications: [],
             hypothesis: undefined,
             code: undefined,
             stage: "conversation",
@@ -42,7 +45,10 @@ app.post("/analyze", async (req, res) => {
     }
 
     //update followup questions while we are waiting
-    if(state.waitingForUser){
+    if(state.substage === "refinement"){
+        state.refinementClarifications.push(question);
+    }
+    else if(state.waitingForUser){
         state.clarifications.push(question);
     }else{
         state.initialUserQuestion = question;

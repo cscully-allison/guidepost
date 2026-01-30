@@ -37,13 +37,13 @@ class CSModel{
 
 class ChatInterface {
     model: CSModel;
-    svg: d3.selection<SVGSVGElement, unknown, HTMLElement, any>;
+    svg: d3.Selection<SVGSVGElement, unknown, HTMLElement, any>;
     session_info: any;
     awaiting_response: boolean;
 
     constructor(
         model: CSModel,
-        svg: d3.selection<SVGSVGElement, unknown, HTMLElement, any>,
+        svg: d3.Selection<SVGSVGElement, unknown, HTMLElement, any>,
         session_info: Object
     ) {
         this.model = model;
@@ -57,25 +57,26 @@ class ChatInterface {
         const self = this;
         this.awaiting_response = true;
         d3.select('#send-button').attr("disabled", "true");
-
-        const this_node = this_evnt.currentTarget;
-        const inputBox = document.querySelector(".chat-input") as HTMLInputElement;
+        const inputSel = d3.select(".chat-input");
         const messagesDiv = document.querySelector(".chat-messages") as HTMLDivElement;
-        const userMessage = inputBox.value;
-        if (userMessage.trim() === "") return;
+        const userMessage = (inputSel.property("value") as string).trim();
+        if (userMessage === "") return;
 
-        const userMsgElem = document.createElement("div");
-        userMsgElem.style.textAlign = "right";
-        userMsgElem.style.marginBottom = "5px";
-        userMsgElem.textContent = `You: ${userMessage}`;
-        messagesDiv.appendChild(userMsgElem);
+        d3.select(messagesDiv)
+            .append("div")
+            .style("text-align", "right")
+            .style("margin-bottom", "5px")
+            .text(`You: ${userMessage}`);
 
-        inputBox.value = "";
-        const placeholder = document.createElement("div");
-        placeholder.style.textAlign = "left";
-        placeholder.style.marginBottom = "5px";
-        placeholder.style.height = "40px";
-        messagesDiv.appendChild(placeholder);
+        inputSel.property("value", "");
+
+        const placeholderSel = d3.select(messagesDiv)
+            .append("div")
+            .style("text-align", "left")
+            .style("margin-bottom", "5px")
+            .style("height", "40px");
+
+        const placeholder = placeholderSel.node() as HTMLDivElement;
 
         const loading = d3.select("#loading");
         loading.attr("visibility", "visible");
@@ -92,7 +93,7 @@ class ChatInterface {
                 question: userMessage,
                 dataSummary: self.model.data
             }),
-        }).then(res => {console.log("wehere?"); return res.json()});
+        }).then(res => {return res.json()});
 
         console.log("Fetch response:", response);
 
@@ -123,6 +124,7 @@ class ChatInterface {
 
 
     createChatInterface(): void {
+        
         const self = this;
 
         const buttonHeight = 30;
@@ -201,18 +203,18 @@ class ChatInterface {
             .text("Send")
             .on("click", self.manageUserTextInput.bind(this));
 
-        const loading = chatGroup.append("g").attr("id", "loading").attr("transform", `translate(${0}, ${0})`);
+        const loading = chatGroup.append("g").attr("id", "loading").attr("transform", `translate(${dimensions.chatWidth/2}, ${dimensions.messagesHeight})`);
 
         let dots = [];
-            for (let x = 0; x < 3; x++) {
-                const dot = loading
-                    .append("circle")
-                    .attr("class", "loading-dot")
-                    .attr("cx", 0 + x * 30)
-                    .attr("cy", 0)
-                    .attr("r", 8)
-                    .attr("fill", "grey");
-                dots.push(dot.node());
+        for (let x = 0; x < 3; x++) {
+            const dot = loading
+                .append("circle")
+                .attr("class", "loading-dot")
+                .attr("cx", 0 + x * 30)
+                .attr("cy", 0)
+                .attr("r", 8)
+                .attr("fill", "grey");
+            dots.push(dot.node());
         }
 
         animate(dots, {
@@ -319,10 +321,15 @@ class CodeDisplayInterface{
                          .style('margin-bottom', "10px")
                          .html((d:any)=>{return`<strong>Translated Hypothesis:</strong><br/><pre style="background-color:#f4f4f4; padding:10px; border:1px solid #ddd;">${d.hypothesis}</pre>`});
 
+
                     enter.append("div")
                          .style('text-align', "left")
                          .style('margin-bottom', "10px")
-                         .html((d:any)=>{return`<strong>Generated Code:</strong><br/><pre style="background-color:#f4f4f4; padding:10px; border:1px solid #ddd;">${d.code}</pre>`});
+                         .html((d:any)=>{return `<strong>Generated Code:</strong>
+                            <br/>
+                            <pre style="background-color:#f4f4f4; padding:10px; border:1px solid #ddd;">
+                            ${d.code}
+                            </pre>`});
                     },
                 (update:any) => {update},
                 (exit:any) => {exit.remove()}
@@ -332,16 +339,9 @@ class CodeDisplayInterface{
 
 // Update the WidgetModel interface to match the expected signature of the 'on' method
 interface WidgetModel extends AnyModel {
-  get(key: "_summary_stats"): unknown;
-  get(key: "_vis_data"): unknown;
+  get(key: string): any;
+  on(event: string, callback: (...args: any[]) => void): void;
   save_changes(): void;
-  on<K extends `change:${string}`>(
-    event: K,
-    callback: K extends `change:${infer Key}`
-      ? (msg: any, buffers: DataView<ArrayBufferLike>[]) => void
-      : never
-  ): void;
-  on(event: "msg:custom", callback: (msg: any, buffers: DataView<ArrayBufferLike>[]) => void): void;
 }
 export function render({
   model,

@@ -1,63 +1,52 @@
-import { boolean, z } from "zod";
 import { StateGraph, END, START } from "@langchain/langgraph";
-import { ChatOpenAI } from "@langchain/openai";
-import {GPTConfig} from "../../local_configs.js";
-import fs from "fs/promises";
-import { stat } from "fs";
-const logfile = './log.txt';
-
-const llm = new ChatOpenAI(GPTConfig);
-
-export const AnalysisState = z.object({
-  stage: z.enum(["conversation", "hypothesis", "refinement", "artifactgen", "done", "pause", "break"]),
-  dataSummary: z.any(),
-
-  initialUserQuestion: z.string(),
-  clarifications: z.array(z.string()),
-  clarificationQuestions: z.array(z.string()),
-
-  hypothesis: z.string().optional(),
-  code: z.string().optional(),
-
-  clarificationNeeded: z.boolean().optional(),
-  userPrompt: z.string().optional(),
-
-  turns: z.number(),
-  clarificationTurns: z.number(),
-
-  waitingForUser: z.boolean().optional(),
-  substage: z.enum(["none", "refinement"]).optional()
-});
-
-export type AnalysisStateType = z.infer<typeof AnalysisState>;
+import { AnalysisState, AnalysisStateType, llm, log } from "../utils.js";
+import { hypothesisNode } from "./base_hypothesis_node.js";
+import { array, json } from "zod";
 
 async function vaugenessCheck(original: string, clarifications: Array<string> = [], dataSummary: any): Promise<number> {
-  fs.appendFile(logfile, "Evaluating Vaugeness\n");
+    log("\n---------------------------\n");
+    log("Evaluating Vaugeness\n");
 
     const response = await llm.invoke(
-      `Rate the following research question based on whether it ${clarifications.length ? 'and the provided clarifications' : ''} could resonably be developed into a formal hypothesis, regardless of whether specific elements are underspecified?
-      Original Question: ${original}
-      ${clarifications.length ? 'Clarifications: ' + clarifications.join("; ") : ''}    
+      `Report your confidence in the following statement: 
+      This research question and the provided clarifications, if present, poses a meaningful analytical question; even if it is underspecified right now.
+      The research question: ${original}
+
+      Additional Contextual Information:
+      ${clarifications.length ? 'Clarifications: ' + clarifications.join("; ") : ''}
+      
       Answer with json formatted with the following two fields:
-        vaugeness: a likert-scale rating from 0 to 3 where 0 means "very vague," 1 means "somewhat vague," 2 means "somewhat clear" and 3 means "very clear".
+        confidence: An integer between 0-4 representing your confidence level, where 4 is "very high", 3 is "high", 2 is "medium", 1 is "low", and 0 "very low"
         reasoning: a brief explanation of your reasoning.`
     );
-    fs.appendFile(logfile, `Vagueness Response: ${response.content}\n`);
-    return JSON.parse(String(response.content)).vaugeness;
+    log( `Vagueness Response: ${response.content}\n`);
+    return JSON.parse(String(response.content)).confidence;
 }
 
-async function addressedClarificationsCheck(clarificationQuestions: Array<string> = [], clarifications: Array<string> = [], hypothesis: string): Promise<Array<string>> {
-  fs.appendFile(logfile, "Evaluating Addressed Clarifications\n");
-  const response = await llm.invoke("")
 
-  //ask llm to compare provided answers and with questions and identify which questions have not yet been addressed
+
+async function addressedClarificationsCheck(clarificationQuestions: Array<string> = [], clarifications: string): Promise<Array<string>> {
+  log("Evaluating Addressed Clarifications\n");
+
+  const response = await llm.invoke(`I will provide you with a list of questions and natural language response that may answer all, some or none of these questions. 
+    
+    Please compare the natural language response against this list of questions and return any questions which have not been addressed by the response. Ensure that returned questions are phrased exactly how you recieved them. 
+    
+    Questions: ${clarificationQuestions.join("; ")}
+    Clarifications: ${clarifications}
+
+    Return the unaddressed questions as a json formatted list.
+    
+    `)
+
+  let unclarifiedQuestions = JSON.parse(String(response.content))
 
   //return all claritifcation questions that have not been addressed in the hypothesis
-  return clarificationQuestions;
+  return unclarifiedQuestions;
 }
 
 const conversationNode = async (state: AnalysisStateType) => {
-  fs.appendFile(logfile, "Conversation Node Start\n");
+  log("Conversation Node Start\n");
   // Ask for a more course evaluation at this stage?
   // Vaugeness checker?
   // Asking for confidence level
@@ -65,9 +54,9 @@ const conversationNode = async (state: AnalysisStateType) => {
   // specified right now
   
   if(state.substage === "none"){
-    fs.appendFile(logfile, `clarification turns: ${state.clarificationTurns}\n`);
-    if(state.clarificationTurns > 2){
-      fs.appendFile(logfile, "Max Clarification Turns Reached\n-------------------------\n");
+    log(`clarification turns: ${state.clarificationTurns}\n`);
+    if(state.clarificationTurns > 1){
+      log("Max Clarification Turns Reached\n-------------------------\n");
       return {
         ...state,
         stage: "break",
@@ -76,15 +65,15 @@ const conversationNode = async (state: AnalysisStateType) => {
       };
     }
 
-    const vagueness = await vaugenessCheck(state.initialUserQuestion, state.clarifications, state.dataSummary);
+    const confidence = await vaugenessCheck(state.initialUserQuestion, state.clarifications, state.dataSummary);
 
-    fs.appendFile(logfile, `Vagueness score: ${vagueness}\n`);
+    log(`Vagueness score: ${confidence}\n`);
 
-    const needsMore = vagueness > 1; // threshold for whether the question is meaningful
+    const needsMore = confidence < 2; // threshold for whether the question is meaningful
 
     if (needsMore) {
       
-      fs.appendFile(logfile, "Clarification Required"+"\n-------------------------\n");
+      log("Clarification Required"+"\n-------------------------\n");
 
       //this should come from the llm
       const response = await llm.invoke(`
@@ -96,7 +85,7 @@ const conversationNode = async (state: AnalysisStateType) => {
         and the provided data summary:
         ${JSON.stringify(state.dataSummary)}
         ${state.waitingForUser ? `and the question you last asked the user: ${state.userPrompt}`:''}
-        `);
+      `);
       
       return {
         ...state,
@@ -108,7 +97,7 @@ const conversationNode = async (state: AnalysisStateType) => {
       };
     }
   
-    fs.appendFile(logfile, "No Clarification Needed"+"\n-------------------------\n");
+    log("No Clarification Needed"+"\n-------------------------\n");
 
     return {
       ...state,
@@ -119,99 +108,94 @@ const conversationNode = async (state: AnalysisStateType) => {
   
   }
   else if(state.substage === "refinement"){
-    //check which clarifications have been addressed
-        // remove addressed clarifications from clarifications list
 
-    if( state.clarifications.length > 0 ){
-      // ask user to address clarification requests presented as an enumerated list
+    log("Clarification Refinement Start\n")
+    // let unaddressed_clarifications = [];
+
+    // if(state.refinementClarifications.length > 0 && state.refinementQuestions.length > 0){
+    // //check which clarifications have been addressed
+    //   // remove addressed clarifications from clarifications list
+    //   let provided_clarifications = state.refinementClarifications[state.refinementClarifications.length-1];
+    //   unaddressed_clarifications = await addressedClarificationsCheck(state.refinementQuestions, provided_clarifications);
+    // }else{
+    //   unaddressed_clarifications = state.refinementQuestions;
+    // }
+
+    // log(""+JSON.stringify(unaddressed_clarifications)+"\n")
+
+    log("Refinement Convo Context:"+JSON.stringify(state.refinementClarifications)+"\n")
+
+    // ask user to address clarification requests presented as an enumerated list
       const response = await llm.invoke(`
-        The hypothesis generation step indicated that the following clarifications were needed to create a formal hypothesis:
-        ${state.clarificationQuestions.join("; ")}
-
-        Please respond only with a prompt to the user that asks them to clarify their question based on these needed clarifications, do not mention that you are providing a clarification prompt.
+        You are an assistant that is conveying potential issues with formalizing a user's provided research question. 
         
-        Original Question: 
+        The following points of ambiguity have been raised by a hypothesis translation component: ${state.refinementQuestions.join("; ")}. ${ state.refinementClarifications.length ? `Only tell the user what issues remain to be resolved from the list if they ask or if the conversation context is getting long.`:`Convey these issues to the user in a nicely formatted list.` }
+
+        If a user asks you a question, respond with concise and focused answers to their questions, keeping in mind their original research question and the conversation context.
+
+        If the user asks you to provide initial specifications or handle unresolved points of ambiguity, you may suggest specifications for any element which needs disambiguation. Explicitly tell the user what assumptions you will make. 
+
+        Once you identify that most, or all of the ambiguities have been resolved by your discussion, ask the user to confirm that they would like to develop a formal hypothesis. Only respond with a true for "resolved" if the user has confirmed that they would like you to proceed.
+
+        Current conversation context:
+        ${state.refinementClarifications.join("; ")}
+        Their original research question: 
         ${state.initialUserQuestion}
+        and a summary of the data:
+        ${JSON.stringify(state.dataSummary)}
+
+        Respond with a json object with three elements:
+          {
+            "resolved": <a boolean that indicates if ambiguities have been sufficently resolved>, 
+            "user_response": <A text based response to the user that addresses the most recent response from the user in the provided conversation context>,
+            "clarifications": <A summary of how the conversation context has clarified points of ambiguity in the hypothesis translation>
+          }
       `);
 
+    log("\nClarification Refinement conversation: "+JSON.stringify(response.content)+"\n-------------------------\n")
+
+    if(!JSON.parse(String(response.content)).resolved){
       return {
         ...state,
         stage: "pause",
         waitingForUser: true,
-        userPrompt: response.content,
+        userPrompt: JSON.parse(String(response.content)).user_response,
+        refinementClarifications: [...state.refinementClarifications, JSON.parse(String(response.content)).user_response],
         clarificationTurns: state.clarificationTurns + 1,
         turns: state.turns + 1
       };
-
-      
-    
-      
-
     }
+
+    log("Clarification Refinement Done\n"+"-------------------------\n")
+    return {
+      ...state,
+      stage: "hypothesis",
+      clarificationNeeded: false,
+      waitingForUser: false,
+      refinementReport: JSON.parse(String(response.content)).clarifications,
+      substage: "refined"
+    }
+
   }
 
 };
 
-const hypothesisNode = async (state: AnalysisStateType) => {
-  fs.appendFile(logfile, "Hypothesis Node Start\n");
 
-  let resp;
-  if(state.clarifications.length === 0){
-    resp = await llm.invoke(`
-      Generate a formal statistical hypothesis from this question: ${state.initialUserQuestion}
-      and this data summary: ${JSON.stringify(state.dataSummary)}
-
-      If any clarifications are needed to make this into a formal hypothesis do not generate a hypothesis, instead respond with a list of specific clarifying questions that would need to be answered to create a formal hypothesis.
-      Otherwise, respond with the formal hypothesis.
-
-      Format your response as follows:
-      If you are able to generate a formal hypothesis, respond with:
-      {
-        "type": "hypothesis",
-        "content": "Your formal hypothesis here"
-      }
-
-      If you need more clarifications, respond with:
-      {
-        "type": "refinements",
-        "content": ["Clarifying question 1", "Clarifying question 2"]
-      }
-    `);
-  }
-  else{
-    resp = await llm.invoke(`
-      Generate a formal statistical hypothesis from this question: ${state.initialUserQuestion}
-      and this data summary: ${JSON.stringify(state.dataSummary)}
-      and these clarifications: ${state.clarifications.join("; ")}
-
-      Format your response as follows:
-      If you are able to generate a formal hypothesis, respond with:
-      {
-        "type": "hypothesis",
-        "content": "Your formal hypothesis here"
-      }
-    `);
-  }
-  
-  fs.appendFile(logfile, "Hypothesis Node End"+JSON.stringify(resp.content)+"\n-------------------------\n");
-  
-  if(JSON.parse(String(resp.content)).type === "refinements"){
-    state.stage = "conversation";
-    return { ...state, clarificationQuestions: resp.content, substage: "refinement" };
-  }else{
-    return { ...state, hypothesis: resp.content, hypothesis_context: '', stage: "artifactgen" };
-  }
-};
 
 const artifactGenNode = async (state: AnalysisStateType) => {
-  fs.appendFile(logfile, "Artifact Node Start\n");
+  log("Artifact Node Start\n");
   const resp = await llm.invoke(`
     Generate a function that outputs a single visualization which enables users to test the hypothesis expressed here: ${state.hypothesis}, 
     using the data summarized as: ${JSON.stringify(state.dataSummary)}.
-    The code should be in Python and use common data science libraries such as statsmodels, pandas, numpy, matplotlib, or seaborn.`);
-  fs.appendFile(logfile, "Code Node End"+JSON.stringify(resp.content)+"\n-------------------------\n");
+
+    THe visualization should visualize the models primary quantity of interest and may (when appropriate) annotate the visualization with threshold(s) that may show comparisions necessary for testing a hypothesis visually.
+
+    Model code and data trasnformations should be in Python and use common data science libraries such as statsmodels, pandas, numpy. Visualization code should use the Altair library and pass in vega-lite-based specifications where necessary`);
+  log("Code Node End"+JSON.stringify(resp.content)+"\n-------------------------\n");
   return { code: resp.content, stage: "done" };
 };
+
+
 
 export const analysisAssistant = new StateGraph(AnalysisState)
   .addNode("conversation_manager", conversationNode)
