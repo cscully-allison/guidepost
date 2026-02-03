@@ -1,7 +1,8 @@
 import * as d3 from "d3";
 import {animate, stagger} from "animejs";
 import type { AnyModel } from "@anywidget/types";
-import e from "express";
+import { marked } from "marked";
+import { hy } from "zod/locales";
 
 const padding = 10;
 
@@ -62,11 +63,24 @@ class ChatInterface {
         const userMessage = (inputSel.property("value") as string).trim();
         if (userMessage === "") return;
 
-        d3.select(messagesDiv)
+        let userMessageBlock = d3.select(messagesDiv)
             .append("div")
-            .style("text-align", "right")
+            .style("text-align", "left")
             .style("margin-bottom", "5px")
-            .text(`You: ${userMessage}`);
+            .style("padding", "5px")
+            .style("border", "1px solid #585858")
+            .style("border-radius", "5px");
+    
+        userMessageBlock.append("strong")
+            .text(`You:`);
+        userMessageBlock.append("br");
+        userMessageBlock.append("div")
+            .style("margin-left", "10px")
+            .style("white-space", "pre-wrap")
+            .style("color", "black")
+            .html(`${marked(userMessage)}`);
+
+
 
         inputSel.property("value", "");
 
@@ -106,10 +120,18 @@ class ChatInterface {
             this.model.update_response(response);
         }
         else{    
-            d3.select(messagesDiv).append("div")
+            let responseBlock = d3.select(messagesDiv).append("div")
                 .style('text-align', "left")
                 .style('margin-bottom', "10px")
-                .html(`<strong>LLM Response:</strong><br/><pre style="background-color:#f4f4f4; padding:10px; border:1px solid #ddd;">${response['userPrompt']}</pre>`);
+                .style("border", "1px solid #585858")
+                .style("border-radius", "5px");
+            
+            responseBlock.append("strong").text("LLM Response:");
+            responseBlock.append("br");
+            responseBlock.append("div")
+                .style('margin-left', "10px")
+                .style('color', "black")
+                .html(`${marked(response["userPrompt"])}`);
         }
 
         d3.select('#send-button').attr("disabled", null);
@@ -316,20 +338,32 @@ class CodeDisplayInterface{
             .data([this.model.response], (d:any)=>{this.toHash(d.hypothesis)})
             .join(
                 (enter:any) => {
-                    enter.append("div")
+                    let hyp_div = enter.append("div")
                          .style('text-align', "left")
                          .style('margin-bottom', "10px")
-                         .html((d:any)=>{return`<strong>Translated Hypothesis:</strong><br/><pre style="background-color:#f4f4f4; padding:10px; border:1px solid #ddd;">${d.hypothesis}</pre>`});
+                    hyp_div.append("strong")
+                            .text("Translated Hypothesis:")
+                    hyp_div.append("br");
+                    hyp_div.append("div")
+                         .style('margin-left', "10px")
+                         .style('background-color', "#f4f4f4")
+                         .style('padding', "10px")
+                         .style('border', "1px solid #ddd") 
+                         .html((d:any)=>`${marked(d.hypothesis)}`);
+                         
 
-
-                    enter.append("div")
+                    let code_div = enter.append("div")
                          .style('text-align', "left")
                          .style('margin-bottom', "10px")
-                         .html((d:any)=>{return `<strong>Generated Code:</strong>
-                            <br/>
-                            <pre style="background-color:#f4f4f4; padding:10px; border:1px solid #ddd;">
-                            ${d.code}
-                            </pre>`});
+                    code_div.append("strong")
+                            .text("Generated Code:")
+                    code_div.append("br");
+                    code_div.append("div")
+                         .style('margin-left', "10px")
+                         .style('background-color', "#f4f4f4")
+                         .style('padding', "10px")
+                         .style('border', "1px solid #ddd") 
+                         .html((d:any)=>`${marked(d.code)}`);
                     },
                 (update:any) => {update},
                 (exit:any) => {exit.remove()}

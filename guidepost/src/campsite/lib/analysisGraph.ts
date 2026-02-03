@@ -137,6 +137,8 @@ const conversationNode = async (state: AnalysisStateType) => {
 
         Once you identify that most, or all of the ambiguities have been resolved by your discussion, ask the user to confirm that they would like to develop a formal hypothesis. Only respond with a true for "resolved" if the user has confirmed that they would like you to proceed.
 
+        YOU DO NOT FORMALIZE HYPOTHESES YET. YOUR SOLE PURPOSE IS TO RESOLVE AMBIGUITIES.
+
         Current conversation context:
         ${state.refinementClarifications.join("; ")}
         Their original research question: 
@@ -147,7 +149,7 @@ const conversationNode = async (state: AnalysisStateType) => {
         Respond with a json object with three elements:
           {
             "resolved": <a boolean that indicates if ambiguities have been sufficently resolved>, 
-            "user_response": <A text based response to the user that addresses the most recent response from the user in the provided conversation context>,
+            "user_response": <A text based response to the user that addresses the most recent response from the user in the provided conversation context; use markdown formatting where appropriate>,
             "clarifications": <A summary of how the conversation context has clarified points of ambiguity in the hypothesis translation>
           }
       `);
