@@ -1,9 +1,12 @@
 // server.ts
 import express from "express";
 import cors from "cors";
-import { analysisAssistant} from "./lib/analysisGraph.ts";
-import { AnalysisStateType } from "./utils.ts";
-import { refine } from "zod";
+import { analysisAssistant} from "./lib/analysis_graph.ts";
+import parser from './lib/semantic_invariant_checker/ir_parser/parser.js'
+import { AnalysisStateType, log } from "./lib/utils.ts";
+import { HypWellFormed } from "./lib/semantic_invariant_checker/si_checkers.js";
+import { json } from "zod";
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -95,6 +98,25 @@ app.post("/analyze", async (req, res) => {
 });
 
 app.get("/ping", (req, res) => res.send(`${query++}`));
+
+app.post("/parse", async (req, res) => {
+    let IR = null;
+    let recoveryParse = null;
+    let unparsable = null;
+
+    IR = parser.parse(req.body.hyp);
+
+    let wfcheck = new HypWellFormed({id:"WELL_FORMED_CHECKS", appliesTo:["IR"]});
+
+    log("IN SERVER CALL" + IR + '\n')
+
+    let violations = wfcheck.check({ir:IR});
+
+    return res.json({
+        parsed: IR,
+        violations: violations
+    })
+});
 
 const port = Number(process.argv[2]) || 3000;
 

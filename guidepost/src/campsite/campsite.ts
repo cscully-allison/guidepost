@@ -37,13 +37,13 @@ class CSModel{
 
 class ChatInterface {
     model: CSModel;
-    svg: d3.Selection<SVGSVGElement, unknown, HTMLElement, any>;
+    svg: any;
     session_info: any;
     awaiting_response: boolean;
 
     constructor(
         model: CSModel,
-        svg: d3.Selection<SVGSVGElement, unknown, HTMLElement, any>,
+        svg: any,
         session_info: Object
     ) {
         this.model = model;

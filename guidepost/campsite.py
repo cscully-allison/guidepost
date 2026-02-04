@@ -144,6 +144,16 @@ class Campsite(anywidget.AnyWidget):
         )
         print(response.text)
 
+    def test_parser(self, hyp):
+        import requests
+        response = requests.post(
+            url=f"http://localhost:{self.node_server.port}/parse",
+            json={"hyp": hyp}
+        )
+        return response.text
+
+    
+
     def analyze(self, q):
         import requests
         response = requests.post(

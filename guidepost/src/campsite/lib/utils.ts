@@ -1,5 +1,5 @@
 import { ChatOpenAI } from "@langchain/openai";
-import { GPTConfig } from "../local_configs";
+import { GPTConfig } from "../../local_configs";
 import { z } from "zod";
 import fs from "fs/promises";
 

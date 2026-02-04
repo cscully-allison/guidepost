@@ -7,6 +7,7 @@ WATCH_DIR="guidepost/src"
 
 # Command to run on changes
 CMD="node esbuild.config.js"
+CMD2="npx peggy guidepost/src/campsite/lib/semantic_invariant_checker/ir_parser/grammar.pegjs -o guidepost/src/campsite/lib/semantic_invariant_checker/ir_parser/parser.js"
 
 # Delay to batch multiple changes (milliseconds)
 DEBOUNCE_MS=200
@@ -20,6 +21,8 @@ fi
 # Keep track of last run to debounce
 LAST_RUN=0
 
+echo "Running $CMD2 ..."
+$CMD2
 echo "Inital run. Running $CMD ..."
 $CMD
 
@@ -33,6 +36,8 @@ while true; do
 
   # Debounce to avoid multiple rapid triggers
   if [ $ELAPSED -ge $DEBOUNCE_MS ]; then
+    echo "Running $CMD2 ..."
+    $CMD2
     echo "Change detected. Running $CMD ..."
     $CMD
     LAST_RUN=$(date +%s%3N)

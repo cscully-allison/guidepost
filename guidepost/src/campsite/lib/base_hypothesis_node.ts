@@ -1,4 +1,4 @@
-import { AnalysisStateType, log, llm } from "../utils";
+import { AnalysisStateType, log, llm } from "./utils";
 
 async function underspecificationCheck(original_question: string, current_clairifcations:Array<string>, dataSummary:any){
     log(`Underspecification check\n`)

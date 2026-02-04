@@ -1,5 +1,5 @@
 import { StateGraph, END, START } from "@langchain/langgraph";
-import { AnalysisState, AnalysisStateType, llm, log } from "../utils.js";
+import { AnalysisState, AnalysisStateType, llm, log } from "./utils.js";
 import { hypothesisNode } from "./base_hypothesis_node.js";
 import { array, json } from "zod";
 
