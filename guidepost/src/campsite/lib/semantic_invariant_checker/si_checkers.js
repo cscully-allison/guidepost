@@ -1,6 +1,8 @@
-import { vi } from 'zod/locales';
-import {log} from '../utils.ts';
+import {log, llm} from '../utils.ts';
 
+export const NLARTIFACT = "NL->Artifact"
+export const NLIR = "NL->IR"
+export const IRARTIFACT = "IR->Artifact"
 
 export const VIOLATION_TYPE = Object.freeze({
     MALFORMED_HYPOTHESIS: "malformed_hypothesis",
@@ -18,7 +20,7 @@ const CRITICALITY_TYPES = Object.freeze({
 class Invariant {
   constructor({ id, appliesTo }) {
     this.id = id;
-    this.appliesTo = appliesTo; // ["IR"], ["ARTIFACT"], or both
+    this.appliesTo = appliesTo; // ["NL"], ["IR"], ["ARTIFACT"] or any pairwise association
   }
 
   check({ ir = null, artifact = null, nl = null }) {
@@ -125,7 +127,48 @@ export class IntentPreserved extends Invariant{
     constructor({ id, appliesTo }) {
         super({ id, appliesTo });
     }
+
+    async check({ir, nl, artifact}){
+        let violations = [];
+
+        log("\nRESPONSE: "+resp+"\n");
+
+        if(this.appliesTo === NLIR){ //this is the NL->IR comnparision case
+            //Comparator Polarity Preservation
+            // See: INT-1 in reference sheet
+            let resp = await llm.invoke(`You will be provided with a natural language hypothesis. 
+                Please extract a comparator that describes the relationship between a quantity of interest and a reference value that the hypothesis is attempting to capture.
+                Natural Language Hypothesis: ${nl}
+
+                Return a json object with the following fields:
+                {
+                    comparator: <the comparator implied by the natural language hypothesis>,
+                    rationale: <a short statement explaining your rationale for choosing this comparator>
+                }
+            `);
+
+            resp = JSON.parse(resp).content;
+
+            log("\nRESPONSE: "+resp+"\n");
+
+
+            if(resp["comparator"] !== ir.event.comparator){
+                violations.push({
+                    invariantID: "INT-1",
+                    violationType: VIOLATION_TYPE.INTENT_VIOLATION,
+                    message: `Comparator polarity not maintained. LLM Rationale for NL comparator choice:${resp["rationale"]}`,
+                    expected: resp["comparator"],
+                    observed: ir.event.comparator,
+                    criticality: CRITICALITY_TYPES.WARN
+                })
+            }
+
+        }
+
+        return violations;
+    }
 }
+
 
 export class StructurePreserved extends Invariant{
     constructor({id, appliesTo}){

@@ -13,7 +13,6 @@
   }
 }
 
-
 Hypothesis
   = _ e:Event _ {
       return { type: "hypothesis", event: e };
@@ -108,7 +107,6 @@ Contrast
 
 Predicate
   = ComparisonPredicate
-  / AttributePredicate
   / InvalidPredicate
   
 
@@ -126,15 +124,6 @@ ComparisonPredicate
 
 CompleteComparison
   = Identifier _ ComparatorOrError _ ConstValue
-
-AttributePredicate
-  = a:Identifier !(_ Comparator){
-        return {
-            type: "predicate",
-            kind : "attribute",
-            attr : a
-        };
-    }
 
 InvalidPredicate
   = p:$(!"]" .)+ {

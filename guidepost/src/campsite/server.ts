@@ -4,7 +4,7 @@ import cors from "cors";
 import { analysisAssistant} from "./lib/analysis_graph.ts";
 import parser from './lib/semantic_invariant_checker/ir_parser/parser.js'
 import { AnalysisStateType, log } from "./lib/utils.ts";
-import { HypWellFormed } from "./lib/semantic_invariant_checker/si_checkers.js";
+import { HypWellFormed, IntentPreserved, StructurePreserved } from "./lib/semantic_invariant_checker/si_checkers.js";
 import { json } from "zod";
 
 const app = express();
@@ -101,20 +101,22 @@ app.get("/ping", (req, res) => res.send(`${query++}`));
 
 app.post("/parse", async (req, res) => {
     let IR = null;
-    let recoveryParse = null;
-    let unparsable = null;
+    let NL = req.body.nl_hyp;
 
     IR = parser.parse(req.body.hyp);
-
-    let wfcheck = new HypWellFormed({id:"WELL_FORMED_CHECKS", appliesTo:["IR"]});
-
-    log("IN SERVER CALL" + IR + '\n')
+    
+    let wfcheck = new HypWellFormed({id:"WELL_FORMED_CHECKS", appliesTo:"IR"});
+    let ipcheck = new IntentPreserved({id:"INTENT_CHECKS", appliesTo:"NL->IR"});
+    let spcheck = new StructurePreserved({id:"STRUCTURE_CHECKS", appliesTo:"IR"});
 
     let violations = wfcheck.check({ir:IR});
+    let violations2 = ipcheck.check({ir:IR, nl:NL})
+
+    // violations.push(...spcheck.check({ir:IR}));
 
     return res.json({
         parsed: IR,
-        violations: violations
+        violations: violations2
     })
 });
 
