@@ -1,30 +1,35 @@
+"""Campsite widget - AI-powered analysis assistant for Jupyter notebooks."""
+
 import os
 import socket
-import subprocess
 import atexit
-import signal
 import threading
 import warnings
+import time
 import pandas as pd
 import traitlets
 import anywidget
 import uuid
+
 from .utils import (
     validate_and_clean_dataframe,
     extract_summary_statistics,
 )
 
+
 def find_free_port():
+    """Find an available port on localhost."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
         return s.getsockname()[1]
 
 
-class LocalNodeServer:
+class CampsiteServer:
     """
-    Singleton Node server manager.
-    Ensures exactly one Node process per kernel.
+    Singleton Python Flask server manager.
+    Ensures exactly one server thread per kernel.
     """
+
     _instance = None
     _lock = threading.Lock()
 
@@ -40,55 +45,86 @@ class LocalNodeServer:
             return
 
         self.port = find_free_port()
-        self.process = None
-        self.node_file = os.path.join(
-            os.path.dirname(__file__), "static", "server.js"
-        )
+        self._thread = None
+        self._running = False
         self.logfile = os.path.join(
-            os.path.dirname(__file__), "node_server.log"
+            os.path.dirname(__file__), "campsite_server.log"
         )
 
         atexit.register(self.stop)
         self._initialized = True
 
     def start(self):
-        if self.process is not None and self.process.poll() is None:
+        """Start the Flask server in a daemon thread."""
+        if self._running:
             return  # already running
 
-        self.process = subprocess.Popen(
-            ["node", self.node_file, str(self.port)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True  # 👈 critical for killing process tree
-        )
+        # Import here to avoid circular imports
+        from .campsite_server import app
 
-        with open(self.logfile, "a") as f:
-            f.write(f"Starting server on pid: {self.process.pid}\n")
+        def run_server():
+            """Run Flask server in thread."""
+            with open(self.logfile, "a") as f:
+                f.write(f"Starting Campsite server on port {self.port}\n")
 
-        # Wait for READY signal
-        for line in self.process.stdout:
-            if f"READY:{self.port}" in line:
-                break
+            # Use werkzeug directly for more control
+            from werkzeug.serving import make_server
+
+            self._server = make_server(
+                "127.0.0.1",
+                self.port,
+                app,
+                threaded=True,
+            )
+            self._running = True
+            self._server.serve_forever()
+
+        self._thread = threading.Thread(target=run_server, daemon=True)
+        self._thread.start()
+
+        # Wait for server to be ready
+        self._wait_for_ready()
+
+    def _wait_for_ready(self, timeout: float = 5.0):
+        """Wait for the server to be ready to accept connections."""
+        import socket
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                with socket.create_connection(("127.0.0.1", self.port), timeout=0.1):
+                    return  # Server is ready
+            except (ConnectionRefusedError, socket.timeout, OSError):
+                time.sleep(0.05)
+
+        raise RuntimeError(f"Campsite server failed to start within {timeout} seconds")
 
     def stop(self):
-        if self.process and self.process.poll() is None:
-            with open(self.logfile, "a") as f:
-                f.write(f"Shutting down Node server on pid:{self.process.pid}\n")
+        """Stop the Flask server."""
+        if not self._running:
+            return
 
-            try:
-                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
-            except Exception:
-                pass
+        with open(self.logfile, "a") as f:
+            f.write(f"Shutting down Campsite server on port {self.port}\n")
 
-        self.process = None
+        if hasattr(self, "_server"):
+            self._server.shutdown()
+
+        self._running = False
+        self._thread = None
 
 
 class Campsite(anywidget.AnyWidget):
+    """
+    Campsite widget - AI-powered analysis assistant.
+
+    Provides an interactive chat interface for hypothesis generation
+    and analysis code generation based on loaded data.
+    """
+
     _esm = os.path.join(
         os.path.dirname(__file__), "static", "campsite", "campsite.js"
     )
-
 
     _session_id = traitlets.Unicode("0").tag(sync=True)
     _node_server_endpoint = traitlets.Unicode("").tag(sync=True)
@@ -98,26 +134,34 @@ class Campsite(anywidget.AnyWidget):
 
     suppress_warnings = False
 
-    # 👇 singleton server shared across all Campsite instances
-    node_server = LocalNodeServer()
+    # Singleton server shared across all Campsite instances
+    _server = CampsiteServer()
 
     def __init__(self):
         super().__init__()
-        self.node_server.start()
-        self._node_server_endpoint = f"http://localhost:{self.node_server.port}"
+        self._server.start()
+        self._node_server_endpoint = f"http://localhost:{self._server.port}"
         self._session_id = uuid.uuid4().hex
 
     @property
     def records(self):
+        """Get the loaded data records."""
         return self._vis_data
 
     @records.setter
     def records(self, df):
+        """Set data records from a DataFrame."""
         self._vis_data = self.load_data(df)
 
     def load_data(self, in_df):
         """
         Load dataframe and extract summary statistics for visualization.
+
+        Args:
+            in_df: pandas DataFrame or data convertible to DataFrame
+
+        Returns:
+            dict: Summary statistics for the data
         """
         if not isinstance(in_df, pd.DataFrame):
             try:
@@ -138,130 +182,44 @@ class Campsite(anywidget.AnyWidget):
         return self._summary_stats
 
     def test_server(self):
+        """Test the server connection."""
         import requests
+
         response = requests.get(
-            f"http://localhost:{self.node_server.port}/ping"
+            f"http://localhost:{self._server.port}/ping"
         )
         print(response.text)
 
     def test_parser(self, hyp, nl):
+        """
+        Test the hypothesis parser.
+
+        Args:
+            hyp: Formal hypothesis string to parse
+            nl: Natural language hypothesis for comparison
+
+        Returns:
+            str: JSON response with parsed result and violations
+        """
         import requests
+
         response = requests.post(
-            url=f"http://localhost:{self.node_server.port}/parse",
+            url=f"http://localhost:{self._server.port}/parse",
             json={"hyp": hyp, "nl_hyp": nl}
         )
         return response.text
 
-    
-
     def analyze(self, q):
+        """
+        Run analysis on a question.
+
+        Args:
+            q: Question or research hypothesis to analyze
+        """
         import requests
+
         response = requests.post(
-            url=f"http://localhost:{self.node_server.port}/analyze",
-            json={"sessionId": "0", "question": q},
+            url=f"http://localhost:{self._server.port}/analyze",
+            json={"sessionId": self._session_id, "question": q},
         )
         self.response = response.text
-
-
-
-#  import anywidget
-# import traitlets
-# import pandas as pd
-# import warnings
-# import os
-# from .utils import convert_to_float, validate_and_clean_dataframe, extract_summary_statistics
-# import json
-
-# import subprocess
-# import socket
-# import atexit
-
-
-# def find_free_port():
-#     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-#         s.bind(("", 0))
-#         return s.getsockname()[1]
-    
-
-# class LocalNodeServer:
-#     def __init__(self):
-#         self.port = find_free_port()
-#         self.process = None
-#         self.node_file = os.path.join(os.path.dirname(__file__), "static", "server.js")
-
-#         self.logfile = os.path.join(os.path.dirname(__file__), "node_server.log")
-
-#         atexit.register(self.stop)
-
-#     def start(self):
-#         self.process = subprocess.Popen( 
-#             ["node", self.node_file, str(self.port)],
-#             stdout=subprocess.PIPE,
-#             stderr=subprocess.PIPE,
-#             text=True
-#         )
-        
-#         with open(self.logfile, "a") as f:
-#                 f.write(f"Starting server on pid: {self.process.pid}\n")
-
-#         # Wait for READY signal
-#         while True:
-#             line = self.process.stdout.readline()
-#             if f"READY:{self.port}" in line:
-#                 break
-
-#     def stop(self):
-#         if self.process:
-#             with open(self.logfile, "a") as f:
-#                 f.write(f"Shutting down Node server on pid:{self.process.pid}\n")
-#             self.process.terminate()
-
-
-# class Campsite(anywidget.AnyWidget):
-#     _esm = os.path.join(os.path.dirname(__file__), "static", "campsite", "campsite.js")
-#     _vis_data = traitlets.Dict({}).tag(sync=True)
-#     _summary_stats = traitlets.Dict({}).tag(sync=True)
-#     records = None
-#     vis_configs = traitlets.Dict({}).tag(sync=True)
-#     suppress_warnings = False
-#     node_server = LocalNodeServer()
-    
-#     def __init__(self):
-#         self.node_server.start()
-
-#     @property
-#     def records(self):
-#         return self._vis_data
-    
-#     @records.setter
-#     def records(self, df):
-#         self._vis_data = self.load_data(df)
-
-#     def load_data(self, in_df):
-#         '''
-#             Load dataframe and extract summary statistics for visualization.
-#         '''
-#     # validate / coerce dataframe
-#         if not isinstance(in_df, pd.DataFrame):
-#             try:
-#                 in_df = pd.DataFrame(in_df)
-#             except Exception:
-#                 raise ValueError("in_df must be a pandas DataFrame or convertible to one")
-
-#         if not self.suppress_warnings and in_df.empty:
-#             warnings.warn("load_data called with an empty DataFrame")
-
-#         o_df, report = validate_and_clean_dataframe(in_df, self.suppress_warnings)
-#         self._summary_stats = extract_summary_statistics(o_df)
-
-#         return self._summary_stats
-    
-#     def test_server(self):
-#         import requests
-#         response = requests.get(f"http://localhost:{self.node_server.port}/ping")
-#         print(response.text)
-
-#     def analyze(self, q):
-#         import requests
-#         response = requests.post(url=f"http://localhost:{self.node_server.port}/analyze", json={'sessionId': '0', 'question':q})
-#         self.response = response.text

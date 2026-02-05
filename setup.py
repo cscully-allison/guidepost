@@ -28,14 +28,22 @@ setup(
         'pandas',
         'scikit-learn',
         'anywidget',
-        'traitlets'
+        'traitlets',
+        # Campsite dependencies
+        'flask>=2.0',
+        'flask-cors>=3.0',
+        'langgraph>=0.0.20',
+        'langchain-openai>=0.0.5',
+        'lark>=1.1',
+        'pydantic>=2.0',
+        'requests>=2.25',
     ],
     classifiers=[
         'Programming Language :: Python :: 3',
         'License :: OSI Approved :: MIT License',
         'Operating System :: OS Independent',
     ],
-    python_requires='>=3.6',
+    python_requires='>=3.10',
     include_package_data=True,
     package_data={
         'guidepost': ['guidepost.js'],
