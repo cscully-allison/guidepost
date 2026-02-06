@@ -123,7 +123,7 @@ class Campsite(anywidget.AnyWidget):
     """
 
     _esm = os.path.join(
-        os.path.dirname(__file__), "static", "campsite", "campsite.js"
+        os.path.dirname(__file__), "static", "campsite.js"
     )
 
     _session_id = traitlets.Unicode("0").tag(sync=True)

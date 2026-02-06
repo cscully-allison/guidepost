@@ -16,13 +16,21 @@ class Const:
 ConstValue = Union[int, float, str, tuple[float, float]]
 
 
+# ---------- Unspecified (ᚦ) ----------
+@dataclass
+class Unspecified:
+    """Represents an intentionally unspecified part of a hypothesis (ᚦ)."""
+
+    type: Literal["unspecified"] = "unspecified"
+
+
 # ---------- Error Handling ----------
 @dataclass
 class ErrorNode:
     """Error node for malformed input."""
 
     type: Literal["error"] = "error"
-    boundary: Literal["quantity", "estimand", "predicate", "expr", "const", "event", "comparator"] = "event"
+    boundary: Literal["quantity", "estimand", "predicate", "expr", "const", "event", "comparator", "referent"] = "event"
     message: str = ""
     text: str = ""
     start: int = 0
@@ -35,10 +43,13 @@ class Predicate:
     """Predicate for conditional expressions."""
 
     type: Literal["predicate"] = "predicate"
-    kind: Literal["comparison"] = "comparison"
+    kind: Literal["comparison", "conjunction"] = "comparison"
     attr: str = ""
     comparator: str = "="
     value: ConstValue = 0
+    # For conjunction predicates (kind="conjunction")
+    lhs: Optional["Predicate"] = None
+    rhs: Optional["Predicate"] = None
 
 
 # ---------- Variables ----------
@@ -76,12 +87,12 @@ class BinaryExpr:
     """Binary expression."""
 
     type: Literal["binary"] = "binary"
-    left: "Expr" = None
+    lhs: "Expr" = None
     op: Literal["+", "-", "*", "/"] = "+"
-    right: "Expr" = None
+    rhs: "Expr" = None
 
 
-Expr = Union[AttrVar, ConstVar, FuncCall, BinaryExpr, ErrorNode]
+Expr = Union[AttrVar, ConstVar, FuncCall, BinaryExpr, "Extract", ErrorNode]
 
 
 # ---------- Estimands ----------
@@ -99,9 +110,9 @@ class Contrast:
     """Contrast between two expectations."""
 
     type: Literal["contrast"] = "contrast"
-    left: Union[Expectation, ErrorNode] = None
+    lhs: Union[Expectation, ErrorNode] = None
     op: Literal["+", "-", "*", "/"] = "-"
-    right: Union[Expectation, ErrorNode] = None
+    rhs: Union[Expectation, ErrorNode] = None
 
 
 Estimand = Union[Contrast, Expectation, ErrorNode]
@@ -124,12 +135,13 @@ Quantity = Union[RV, Estimand, Expr, ErrorNode]
 # ---------- Events ----------
 @dataclass
 class Comparison:
-    """Comparison event."""
+    """Event: quantity comparator referent (predicate)?"""
 
     type: Literal["comparison"] = "comparison"
     quantity: Quantity = None
-    comparator: str = "="
-    reference: Union[Const, ErrorNode] = None
+    comparator: str = "="  # "ᚦ" when intentionally unspecified
+    referent: Union[Const, Quantity, Unspecified, ErrorNode] = None
+    predicate: Optional[Predicate] = None  # optional event-level predicate
 
 
 Event = Union[Comparison, ErrorNode]
@@ -154,8 +166,26 @@ class Extract:
     estimand: Estimand = None
 
 
-# Valid comparators
-VALID_COMPARATORS = frozenset(["=", ">", "<", ">=", "<=", "!=", "BETWEEN", "IN"])
+# ---------- Parse Result ----------
+@dataclass
+class ParseResult:
+    """Result of parsing a hypothesis string.
+
+    Wraps a Hypothesis AST with a list of ErrorNodes encountered during
+    parsing. When errors is empty, the parse was fully successful.
+    When errors is non-empty, partial recovery was attempted.
+    """
+
+    hypothesis: Hypothesis = None
+    errors: list[ErrorNode] = field(default_factory=list)
+
+    @property
+    def is_partial(self) -> bool:
+        return len(self.errors) > 0
+
+
+# Valid comparators (ᚦ = intentionally unspecified)
+VALID_COMPARATORS = frozenset(["=", ">", "<", ">=", "<=", "!=", "BETWEEN", "IN", "ᚦ"])
 
 # Function names
 FUNC_NAMES = frozenset([

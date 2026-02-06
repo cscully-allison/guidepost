@@ -10,7 +10,7 @@ from flask_cors import CORS
 from .campsite_lib.utils import AnalysisState, log
 from .campsite_lib.analysis_graph import analysis_assistant
 from .campsite_lib.ir_parser import parse_hypothesis, hypothesis_to_dict
-from .campsite_lib.si_checkers import HypWellFormed, IntentPreserved
+from .campsite_lib.si_checkers import SICheckRunner
 
 
 def create_app() -> Flask:
@@ -125,30 +125,23 @@ def create_app() -> Flask:
         hyp_text = data.get("hyp", "")
         nl_hyp = data.get("nl_hyp", "")
 
-        # Parse the hypothesis
-        ir = parse_hypothesis(hyp_text)
-        ir_dict = hypothesis_to_dict(ir)
+        # Parse the hypothesis (with partial recovery on failure)
+        parse_result = parse_hypothesis(hyp_text)
+        ir_dict = hypothesis_to_dict(parse_result.hypothesis)
+        parse_errors = [hypothesis_to_dict(e) for e in parse_result.errors]
 
-        # Run well-formed check
-        wf_check = HypWellFormed(id="WELL_FORMED_CHECKS", appliesTo="IR")
-        violations = wf_check.check(ir=ir_dict)
+        # Run semantic invariant checks
+        runner = SICheckRunner()
+        if nl_hyp:
+            violations = runner.run_all(nl=nl_hyp, ir=ir_dict)
+        else:
+            violations = runner.run_ir_only(ir=ir_dict)
 
-        # Try intent preservation check (requires LLM)
-        violations2 = []
-        try:
-            import os
-            if os.environ.get("OPENAI_API_KEY"):
-                ip_check = IntentPreserved(id="INTENT_CHECKS", appliesTo="NL->IR")
-                violations2 = ip_check.check(ir=ir_dict, nl=nl_hyp)
-        except Exception as e:
-            # Log but don't fail if LLM check fails
-            log(f"IntentPreserved check failed: {e}\n")
-
-        # Combine violations
-        all_violations = [v.to_dict() for v in violations + violations2]
+        all_violations = [v.to_dict() for v in violations]
 
         return jsonify({
             "parsed": ir_dict,
+            "parseErrors": parse_errors,
             "violations": all_violations,
         })
 
