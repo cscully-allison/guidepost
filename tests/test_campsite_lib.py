@@ -1066,6 +1066,189 @@ class TestSICheckers:
         ex_ir_violations = [v for v in violations if "EX-IR" in v.invariantID]
         assert len(ex_ir_violations) == 0
 
+    # -- Fix 3: EventFormChecker referent predicate --
+
+    def test_event_form_conditioned_by_referent_predicate(self):
+        """EventFormChecker should detect conditioning in referent subtree."""
+        from guidepost.campsite_lib.si_checkers import EventFormChecker
+
+        ir = {
+            "type": "hypothesis",
+            "event": {
+                "type": "comparison",
+                "quantity": {"type": "expectation", "attr": "x", "predicate": None},
+                "comparator": ">",
+                "referent": {
+                    "type": "expectation", "attr": "x",
+                    "predicate": {"type": "predicate", "kind": "comparison", "attr": "g", "comparator": "=", "value": 0},
+                },
+                "predicate": None,
+            },
+        }
+        checker = EventFormChecker()
+        result = checker.extract_from_ir(ir)
+        assert result.value == "conditioned"
+
+    # -- Fix 5: ErrorNode produces MALFORMED violations --
+
+    def test_error_node_event_produces_malformed(self):
+        """ErrorNode at event level should produce MALFORMED violations."""
+        from guidepost.campsite_lib.si_checkers import ComparatorChecker, ViolationType
+
+        ir = {
+            "type": "hypothesis",
+            "event": {"type": "error", "boundary": "event", "message": "bad parse"},
+        }
+        checker = ComparatorChecker()
+        violations = checker.check(ir=ir)
+        malformed = [v for v in violations if v.violationType == ViolationType.MALFORMED]
+        assert len(malformed) == 1
+        assert "malformed" in malformed[0].message.lower()
+        assert "event" in malformed[0].message.lower()
+
+    def test_error_node_quantity_only_affects_quantity_checkers(self):
+        """ErrorNode in quantity should not affect ComparatorChecker."""
+        from guidepost.campsite_lib.si_checkers import (
+            ComparatorChecker, QuantitySignatureChecker, ViolationType,
+        )
+
+        ir = {
+            "type": "hypothesis",
+            "event": {
+                "type": "comparison",
+                "quantity": {"type": "error", "boundary": "quantity", "message": "bad qty"},
+                "comparator": ">",
+                "referent": {"type": "const", "value": 0},
+                "predicate": None,
+            },
+        }
+        # ComparatorChecker should work fine (event is not an error)
+        comp_checker = ComparatorChecker()
+        comp_violations = comp_checker.check(ir=ir)
+        comp_malformed = [v for v in comp_violations if v.violationType == ViolationType.MALFORMED]
+        assert len(comp_malformed) == 0
+
+        # QuantitySignatureChecker should report MALFORMED
+        qty_checker = QuantitySignatureChecker()
+        qty_violations = qty_checker.check(ir=ir)
+        qty_malformed = [v for v in qty_violations if v.violationType == ViolationType.MALFORMED]
+        assert len(qty_malformed) == 1
+
+    def test_error_node_referent_affects_reference_checker(self):
+        """ErrorNode in referent should produce MALFORMED from ReferenceChecker."""
+        from guidepost.campsite_lib.si_checkers import ReferenceChecker, ViolationType
+
+        ir = {
+            "type": "hypothesis",
+            "event": {
+                "type": "comparison",
+                "quantity": {"type": "expectation", "attr": "x", "predicate": None},
+                "comparator": ">",
+                "referent": {"type": "error", "boundary": "referent", "message": "bad ref"},
+                "predicate": None,
+            },
+        }
+        checker = ReferenceChecker()
+        violations = checker.check(ir=ir)
+        malformed = [v for v in violations if v.violationType == ViolationType.MALFORMED]
+        assert len(malformed) == 1
+
+    # -- Fix 6: Float near-equality --
+
+    def test_reference_float_near_equality(self):
+        """Float values that are nearly equal should match."""
+        from guidepost.campsite_lib.si_checkers import ReferenceChecker, ExtractedValue
+
+        checker = ReferenceChecker()
+        # 0.1 + 0.2 != 0.3 in IEEE 754, but should match via math.isclose
+        checker.set_nl_override(ExtractedValue(value=0.1 + 0.2, exists=True))
+        ir = {
+            "type": "hypothesis",
+            "event": {
+                "type": "comparison",
+                "quantity": {"type": "expectation", "attr": "x", "predicate": None},
+                "comparator": ">",
+                "referent": {"type": "const", "value": 0.3},
+                "predicate": None,
+            },
+        }
+        violations = checker.check(nl="dummy", ir=ir)
+        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
+        assert len(pw_violations) == 0
+
+    # -- Fix 7: Confidence threshold --
+
+    def test_low_confidence_downgrades_to_warn(self):
+        """Low-confidence NL extraction should produce WARN, not FAIL, on mismatch."""
+        from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue, Criticality
+
+        checker = ComparatorChecker()
+        checker.set_nl_override(ExtractedValue(value="<", exists=True, confidence=0.2))
+        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
+        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
+        assert len(pw_violations) == 1
+        assert pw_violations[0].criticality == Criticality.WARN
+
+    def test_high_confidence_stays_fail(self):
+        """High-confidence NL extraction should keep FAIL on mismatch."""
+        from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue, Criticality
+
+        checker = ComparatorChecker()
+        checker.set_nl_override(ExtractedValue(value="<", exists=True, confidence=0.9))
+        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
+        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
+        assert len(pw_violations) == 1
+        assert pw_violations[0].criticality == Criticality.FAIL
+
+    # -- Fix 8: NL alias additions --
+
+    def test_comparator_higher_than_alias(self):
+        """NL 'higher than' should normalize to '>'."""
+        from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue
+
+        checker = ComparatorChecker()
+        checker.set_nl_override(ExtractedValue(value="higher than", exists=True))
+        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
+        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
+        assert len(pw_violations) == 0
+
+    def test_comparator_no_more_than_alias(self):
+        """NL 'no more than' should normalize to '<='."""
+        from guidepost.campsite_lib.si_checkers import ComparatorChecker
+
+        checker = ComparatorChecker()
+        assert checker._normalize_nl_value("no more than") == "<="
+
+    def test_event_form_unconditioned_typo_fix(self):
+        """'unconditioned' (correctly spelled) should normalize to 'simple'."""
+        from guidepost.campsite_lib.si_checkers import EventFormChecker
+
+        checker = EventFormChecker()
+        assert checker._normalize_nl_value("unconditioned") == "simple"
+
+    # -- Fix 11: Numeric string guard in ReferenceChecker --
+
+    def test_reference_numeric_string_does_not_hit_dict_path(self):
+        """NL numeric string '50000' should not match a quantity-type referent via substring."""
+        from guidepost.campsite_lib.si_checkers import ReferenceChecker, ExtractedValue
+
+        ir = {
+            "type": "hypothesis",
+            "event": {
+                "type": "comparison",
+                "quantity": {"type": "expectation", "attr": "salary", "predicate": None},
+                "comparator": ">",
+                "referent": {"type": "expectation", "attr": "salary", "predicate": {"attr": "dept", "comparator": "=", "value": "eng"}},
+                "predicate": None,
+            },
+        }
+        checker = ReferenceChecker()
+        checker.set_nl_override(ExtractedValue(value="50000", exists=True))
+        violations = checker.check(nl="dummy", ir=ir)
+        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
+        # Should produce a mismatch — "50000" is not a description of the quantity referent
+        assert len(pw_violations) == 1
+
 
 class TestComparatorScanner:
     """Tests for the bracket-aware comparator scanner."""

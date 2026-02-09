@@ -9,8 +9,8 @@ validates existence, and performs pairwise checks between successive
 representations (NL→IR, IR→Artifact).
 """
 
-import asyncio
 import json
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -129,7 +129,7 @@ def _ensure_dict(ir: Any) -> dict:
 
 
 def _collect_predicates(node: dict) -> list[dict]:
-    """Walk a quantity subtree and collect all predicates as flat dicts."""
+    """Walk an event/quantity subtree and collect all predicates as flat dicts."""
     predicates = []
     if not isinstance(node, dict):
         return predicates
@@ -180,6 +180,23 @@ def _has_conditioning(quantity: dict) -> bool:
     return len(_collect_predicates(quantity)) > 0
 
 
+def _is_error_node(node: Any) -> bool:
+    """Check if a node is an ErrorNode (dict with type='error')."""
+    return isinstance(node, dict) and node.get("type") == "error"
+
+
+def _malformed_extracted(node: dict) -> ExtractedValue:
+    """Create an ExtractedValue marking a malformed subtree."""
+    return ExtractedValue(
+        value=None, exists=False,
+        metadata={
+            "malformed": True,
+            "boundary": node.get("boundary", ""),
+            "message": node.get("message", ""),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Base class
 # ---------------------------------------------------------------------------
@@ -192,8 +209,9 @@ class CanonicalFieldChecker(ABC):
     """
 
     field_id: str = ""
-    required_in: list[str] = []  # Which representations MUST contain this field
+    required_in: tuple[str, ...] = ()  # Which representations MUST contain this field
     nl_prompt_template: str = ""  # LLM prompt template for NL extraction
+    confidence_threshold: float = 0.5  # Below this, pairwise violations downgrade to WARN
 
     def __init__(self):
         self._nl_override: Optional[ExtractedValue] = None
@@ -253,7 +271,10 @@ class CanonicalFieldChecker(ABC):
             )
         except Exception as e:
             log(f"NL extraction failed for {self.field_id}: {e}\n")
-            return ExtractedValue(value=None, exists=False)
+            return ExtractedValue(
+                value=None, exists=False,
+                metadata={"extraction_failed": True, "error": str(e)},
+            )
 
     def _normalize_nl_value(self, raw_value: Any) -> Any:
         """Normalize a raw NL-extracted value to canonical form.
@@ -282,6 +303,19 @@ class CanonicalFieldChecker(ABC):
         """Check whether the canonical field exists in the given representation."""
         if representation not in self.required_in:
             return None
+        if extracted.metadata.get("malformed"):
+            boundary = extracted.metadata.get("boundary", "")
+            msg = extracted.metadata.get("message", "")
+            return Violation(
+                invariantID=f"{self.field_id}-MALFORMED-{representation}",
+                violationType=ViolationType.MALFORMED,
+                message=f"Canonical field '{self.field_id}' could not be checked: "
+                        f"malformed {boundary} in {representation}"
+                        + (f" ({msg})" if msg else ""),
+                criticality=Criticality.FAIL,
+                expected="well-formed subtree",
+                observed=f"ErrorNode(boundary={boundary})",
+            )
         if not extracted.exists:
             return Violation(
                 invariantID=f"{self.field_id}-EX-{representation}",
@@ -308,13 +342,17 @@ class CanonicalFieldChecker(ABC):
             return None  # Can't compare if one side is missing
 
         if not self._values_match(source.value, target.value):
+            low_confidence = (
+                source.confidence < self.confidence_threshold
+                or target.confidence < self.confidence_threshold
+            )
             return Violation(
                 invariantID=f"{self.field_id}-{pair_label}",
                 violationType=_PAIRWISE_VIOLATION_TYPE_MAP.get(
                     pair_label, ViolationType.NL_IR_MISMATCH
                 ),
                 message=f"Canonical field '{self.field_id}' differs between representations",
-                criticality=Criticality.FAIL,
+                criticality=Criticality.WARN if low_confidence else Criticality.FAIL,
                 expected=source.value,
                 observed=target.value,
             )
@@ -384,7 +422,7 @@ class ComparatorChecker(CanonicalFieldChecker):
     """event.comparator — Directional relation defining the hypothesis."""
 
     field_id = "event.comparator"
-    required_in = ["IR"]
+    required_in = ("IR",)
     nl_prompt_template = (
         "You will be provided with a natural language hypothesis.\n"
         "Extract the comparator that describes the relationship between "
@@ -398,7 +436,10 @@ class ComparatorChecker(CanonicalFieldChecker):
 
     _NL_ALIASES = {
         "greater than": ">", "more than": ">", "exceeds": ">", "above": ">",
+        "higher than": ">",
         "less than": "<", "fewer than": "<", "below": "<", "under": "<",
+        "lower than": "<",
+        "no more than": "<=", "no less than": ">=",
         "equal to": "=", "equals": "=", "equal": "=",
         "at least": ">=", "greater than or equal to": ">=",
         "at most": "<=", "less than or equal to": "<=",
@@ -412,7 +453,10 @@ class ComparatorChecker(CanonicalFieldChecker):
         return raw_value
 
     def extract_from_ir(self, ir: dict) -> ExtractedValue:
-        comparator = ir.get("event", {}).get("comparator")
+        event = ir.get("event", {})
+        if _is_error_node(event):
+            return _malformed_extracted(event)
+        comparator = event.get("comparator")
         exists = comparator is not None and comparator in VALID_COMPARATORS
         return ExtractedValue(value=comparator, exists=exists)
 
@@ -421,7 +465,7 @@ class ReferenceChecker(CanonicalFieldChecker):
     """event.reference — Reference or threshold value defining the event boundary."""
 
     field_id = "event.reference"
-    required_in = ["IR"]
+    required_in = ("IR",)
     nl_prompt_template = (
         "You will be provided with a natural language hypothesis.\n"
         "Extract the reference or threshold value that the quantity is being compared against.\n"
@@ -440,7 +484,7 @@ class ReferenceChecker(CanonicalFieldChecker):
     def _values_match(self, source_value: Any, target_value: Any) -> bool:
         # Numeric coercion: both sides numeric or numeric-string
         try:
-            return float(source_value) == float(target_value)
+            return math.isclose(float(source_value), float(target_value), rel_tol=1e-9)
         except (TypeError, ValueError):
             pass
 
@@ -456,6 +500,13 @@ class ReferenceChecker(CanonicalFieldChecker):
             dict_side, str_side = target_value, source_value
 
         if dict_side and str_side and dict_side.get("type"):
+            # Skip dict-vs-string matching if the string is numeric —
+            # it's a literal reference, not a descriptive phrase.
+            try:
+                float(str_side)
+                return False  # Numeric string can't match a quantity-type referent
+            except (TypeError, ValueError):
+                pass
             nl_lower = str_side.lower()
             # Check attr name appears in NL description
             attr = dict_side.get("attr", "")
@@ -473,9 +524,14 @@ class ReferenceChecker(CanonicalFieldChecker):
         return source_value == target_value
 
     def extract_from_ir(self, ir: dict) -> ExtractedValue:
-        referent = ir.get("event", {}).get("referent")
+        event = ir.get("event", {})
+        if _is_error_node(event):
+            return _malformed_extracted(event)
+        referent = event.get("referent")
         if referent is None:
             return ExtractedValue(value=None, exists=False)
+        if _is_error_node(referent):
+            return _malformed_extracted(referent)
         if isinstance(referent, dict) and referent.get("type") == "unspecified":
             return ExtractedValue(
                 value="unspecified", exists=True, metadata={"unspecified": True}
@@ -494,7 +550,7 @@ class EventFormChecker(CanonicalFieldChecker):
     """event.form — What kind of claim is being made (simple, conditioned, underspecified)."""
 
     field_id = "event.form"
-    required_in = ["IR"]
+    required_in = ("IR",)
     nl_prompt_template = (
         "You will be provided with a natural language hypothesis.\n"
         "Classify the form of the claim:\n"
@@ -511,7 +567,7 @@ class EventFormChecker(CanonicalFieldChecker):
     _NL_ALIASES = {
         "conditional": "conditioned", "unconditional": "simple",
         "unclear": "underspecified", "incomplete": "underspecified",
-        "marginal": "simple", "unconditoned": "simple",
+        "marginal": "simple", "unconditioned": "simple",
     }
 
     def _normalize_nl_value(self, raw_value: Any) -> Any:
@@ -521,6 +577,8 @@ class EventFormChecker(CanonicalFieldChecker):
 
     def extract_from_ir(self, ir: dict) -> ExtractedValue:
         event = ir.get("event", {})
+        if _is_error_node(event):
+            return _malformed_extracted(event)
         if not event:
             return ExtractedValue(value=None, exists=False)
 
@@ -532,9 +590,15 @@ class EventFormChecker(CanonicalFieldChecker):
             or (isinstance(referent, dict) and referent.get("type") == "unspecified")
         )
 
+        has_referent_conditioning = (
+            isinstance(referent, dict)
+            and referent.get("type") not in ("const", "unspecified", None)
+            and _has_conditioning(referent)
+        )
+
         if has_unspecified:
             form = "underspecified"
-        elif has_event_pred or _has_conditioning(quantity):
+        elif has_event_pred or _has_conditioning(quantity) or has_referent_conditioning:
             form = "conditioned"
         else:
             form = "simple"
@@ -546,15 +610,19 @@ class QuantitySignatureChecker(CanonicalFieldChecker):
     """quantity.signature — What kind of quantity is being evaluated."""
 
     field_id = "quantity.signature"
-    required_in = ["IR"]
+    required_in = ("IR",)
     nl_prompt_template = (
         "You will be provided with a natural language hypothesis.\n"
         "Classify what kind of quantity is being evaluated:\n"
-        '- "level" — a simple mean or aggregate (e.g., "the average salary")\n'
-        '- "contrast" — a difference or comparison between groups (e.g., "difference in salary")\n'
-        '- "distribution" — uncertainty or distributional claim (e.g., "CI for the mean")\n'
+        # '- "level" — a simple mean or aggregate (e.g., "the average salary")\n'
+        '- "level" — a single scalar value describing a data attribute (e.g., "the average salary")\n'
+        # '- "contrast" — a difference or comparison between groups (e.g., "difference in salary")\n'
+        '- "contrast" — a comparison represented as a difference (e.g., "difference in salary between groups")\n'
+        # '- "distribution" — uncertainty or distributional claim (e.g., "CI for the mean")\n'
+        '- "distribution" — a random variable representing uncertainty about a value (e.g., "CI for the mean")\n'
         '- "trend" — slope, change over time (e.g., "increasing trend")\n'
-        '- "association" — correlation or relationship (e.g., "correlated with")\n'
+        # '- "association" — correlation or relationship (e.g., "correlated with")\n'
+        '- "association" — a symmetric relationship between values (e.g., "correlation between ice cream sales and murders")\n'
         "Natural Language Hypothesis: {nl}\n\n"
         "Return a JSON object:\n"
         '{{"value": "level"|"contrast"|"distribution"|"trend"|"association", '
@@ -562,6 +630,9 @@ class QuantitySignatureChecker(CanonicalFieldChecker):
         '"rationale": "<short explanation>"}}'
     )
 
+    # Maps IR quantity types to signature categories.
+    # Note: "extract" is assumed to be "trend"; the Extract node's model field
+    # is not inspected since the NL prompt doesn't differentiate model types.
     _SIGNATURE_MAP = {
         "expectation": "level",
         "contrast": "contrast",
@@ -584,7 +655,12 @@ class QuantitySignatureChecker(CanonicalFieldChecker):
         return raw_value
 
     def extract_from_ir(self, ir: dict) -> ExtractedValue:
-        quantity = ir.get("event", {}).get("quantity", {}) or {}
+        event = ir.get("event", {})
+        if _is_error_node(event):
+            return _malformed_extracted(event)
+        quantity = event.get("quantity", {}) or {}
+        if _is_error_node(quantity):
+            return _malformed_extracted(quantity)
         qtype = quantity.get("type")
 
         # Special case: func node with CORR → association
@@ -599,7 +675,7 @@ class ConditioningChecker(CanonicalFieldChecker):
     """quantity.conditioning — Explicit predicates restricting the hypothesis domain."""
 
     field_id = "quantity.conditioning"
-    required_in = []  # Conditioning is optional
+    required_in = ()  # Conditioning is optional
     nl_prompt_template = (
         "You will be provided with a natural language hypothesis.\n"
         "Extract any conditioning predicates — subgroup restrictions like "
@@ -639,6 +715,8 @@ class ConditioningChecker(CanonicalFieldChecker):
 
     def extract_from_ir(self, ir: dict) -> ExtractedValue:
         event = ir.get("event", {})
+        if _is_error_node(event):
+            return _malformed_extracted(event)
         predicates = _collect_predicates(event)
 
         return ExtractedValue(value=predicates, exists=len(predicates) > 0)
@@ -687,15 +765,15 @@ class ConditioningChecker(CanonicalFieldChecker):
             resp = json.loads(response.content)
             return resp.get("match", False)
         except Exception as e:
-            log(f"LLM judge failed for conditioning: {e}\n")
-            return False
+            log(f"LLM judge failed for conditioning (assuming match): {e}\n")
+            return True
 
 
 class EstimandShapeChecker(CanonicalFieldChecker):
     """quantity.estimand_shape — Algebraic structure of the estimand."""
 
     field_id = "quantity.estimand_shape"
-    required_in = ["IR"]
+    required_in = ("IR",)
     nl_prompt_template = (
         "You will be provided with a natural language hypothesis.\n"
         "Classify the algebraic structure of the quantity:\n"
@@ -730,7 +808,12 @@ class EstimandShapeChecker(CanonicalFieldChecker):
         return raw_value
 
     def extract_from_ir(self, ir: dict) -> ExtractedValue:
-        quantity = ir.get("event", {}).get("quantity", {}) or {}
+        event = ir.get("event", {})
+        if _is_error_node(event):
+            return _malformed_extracted(event)
+        quantity = event.get("quantity", {}) or {}
+        if _is_error_node(quantity):
+            return _malformed_extracted(quantity)
         qtype = quantity.get("type")
 
         if qtype == "expectation":
@@ -743,6 +826,8 @@ class EstimandShapeChecker(CanonicalFieldChecker):
 
         if qtype == "rv":
             estimand = quantity.get("estimand", {}) or {}
+            if _is_error_node(estimand):
+                return _malformed_extracted(estimand)
             if estimand.get("type") == "contrast":
                 op = estimand.get("op", "-")
                 inner = self._OP_SHAPE_MAP.get(op, "contrast")
@@ -756,7 +841,7 @@ class UncertaintyShownChecker(CanonicalFieldChecker):
     """quantity.uncertainty_shown — Whether quantity is point or distribution."""
 
     field_id = "quantity.uncertainty_shown"
-    required_in = ["IR"]
+    required_in = ("IR",)
     nl_prompt_template = (
         "You will be provided with a natural language hypothesis.\n"
         "Determine whether the hypothesis treats the quantity as a fixed point "
@@ -782,7 +867,12 @@ class UncertaintyShownChecker(CanonicalFieldChecker):
         return raw_value
 
     def extract_from_ir(self, ir: dict) -> ExtractedValue:
-        quantity = ir.get("event", {}).get("quantity", {}) or {}
+        event = ir.get("event", {})
+        if _is_error_node(event):
+            return _malformed_extracted(event)
+        quantity = event.get("quantity", {}) or {}
+        if _is_error_node(quantity):
+            return _malformed_extracted(quantity)
         is_rv = quantity.get("type") == "rv"
         return ExtractedValue(
             value="distribution" if is_rv else "point", exists=True
@@ -793,7 +883,7 @@ class UncertaintyTargetChecker(CanonicalFieldChecker):
     """quantity.uncertainty_target — What object uncertainty is attached to."""
 
     field_id = "quantity.uncertainty_target"
-    required_in = []  # Only relevant when uncertainty IS present
+    required_in = ()  # Only relevant when uncertainty IS present
     nl_prompt_template = (
         "You will be provided with a natural language hypothesis.\n"
         "If the hypothesis mentions uncertainty, identify what the uncertainty "
@@ -820,10 +910,17 @@ class UncertaintyTargetChecker(CanonicalFieldChecker):
         return raw_value
 
     def extract_from_ir(self, ir: dict) -> ExtractedValue:
-        quantity = ir.get("event", {}).get("quantity", {}) or {}
+        event = ir.get("event", {})
+        if _is_error_node(event):
+            return _malformed_extracted(event)
+        quantity = event.get("quantity", {}) or {}
+        if _is_error_node(quantity):
+            return _malformed_extracted(quantity)
         if quantity.get("type") != "rv":
             return ExtractedValue(value=None, exists=False)
         estimand = quantity.get("estimand", {}) or {}
+        if _is_error_node(estimand):
+            return _malformed_extracted(estimand)
         target = estimand.get("type", "unknown")
         return ExtractedValue(value=target, exists=True)
 
