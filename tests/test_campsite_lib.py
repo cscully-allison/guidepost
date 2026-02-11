@@ -287,6 +287,17 @@ class TestSICheckers:
         },
     }
 
+    QUANTITY_REFERENT_IR = {
+        "type": "hypothesis",
+        "event": {
+            "type": "comparison",
+            "quantity": {"type": "expectation", "attr": "x", "predicate": {"type": "predicate", "kind": "comparison", "attr": "a", "comparator": "=", "value": 1}},
+            "comparator": ">",
+            "referent": {"type": "expectation", "attr": "x", "predicate": {"type": "predicate", "kind": "comparison", "attr": "a", "comparator": "=", "value": 0}},
+            "predicate": None,
+        },
+    }
+
     # -- ComparatorChecker tests --
 
     def test_comparator_extracts_valid(self):
@@ -316,6 +327,15 @@ class TestSICheckers:
         assert result.value == "~~"
         assert result.exists is False
 
+    def test_comparator_thorn_is_missing(self):
+        """Thorn character 'ᚦ' should be extracted as 'missing'."""
+        from guidepost.campsite_lib.si_checkers import ComparatorChecker
+
+        checker = ComparatorChecker()
+        result = checker.extract_from_ir(self.UNDERSPECIFIED_IR)
+        assert result.value == "missing"
+        assert result.exists is True
+
     def test_comparator_existence_violation_on_missing(self):
         from guidepost.campsite_lib.si_checkers import ComparatorChecker
 
@@ -332,18 +352,20 @@ class TestSICheckers:
         ex_violations = [v for v in violations if "EX-IR" in v.invariantID and "comparator" in v.invariantID]
         assert len(ex_violations) == 0
 
-    # -- ReferenceChecker tests --
+    # -- ReferentChecker tests --
 
-    def test_reference_extracts_const(self):
-        from guidepost.campsite_lib.si_checkers import ReferenceChecker
+    def test_referent_extracts_threshold(self):
+        """Const referent should be categorized as 'threshold'."""
+        from guidepost.campsite_lib.si_checkers import ReferentChecker
 
-        checker = ReferenceChecker()
+        checker = ReferentChecker()
         result = checker.extract_from_ir(self.SIMPLE_EXPECTATION_IR)
-        assert result.value == 0
+        assert result.value == "threshold"
         assert result.exists is True
 
-    def test_reference_extracts_unspecified(self):
-        from guidepost.campsite_lib.si_checkers import ReferenceChecker
+    def test_referent_extracts_missing_for_unspecified(self):
+        """Unspecified referent should be categorized as 'missing'."""
+        from guidepost.campsite_lib.si_checkers import ReferentChecker
 
         ir = {
             "type": "hypothesis",
@@ -354,61 +376,70 @@ class TestSICheckers:
                 "referent": {"type": "unspecified"},
             },
         }
-        checker = ReferenceChecker()
+        checker = ReferentChecker()
         result = checker.extract_from_ir(ir)
-        assert result.value == "unspecified"
+        assert result.value == "missing"
         assert result.exists is True
         assert result.metadata.get("unspecified") is True
 
-    def test_reference_missing(self):
-        from guidepost.campsite_lib.si_checkers import ReferenceChecker
-
-        checker = ReferenceChecker()
-        result = checker.extract_from_ir(self.EMPTY_EVENT_IR)
-        assert result.exists is False
-
-    def test_reference_extracts_quantity_referent(self):
-        from guidepost.campsite_lib.si_checkers import ReferenceChecker
+    def test_referent_extracts_missing_for_none(self):
+        """None referent should be categorized as 'missing'."""
+        from guidepost.campsite_lib.si_checkers import ReferentChecker
 
         ir = {
             "type": "hypothesis",
             "event": {
                 "type": "comparison",
-                "quantity": {"type": "expectation", "attr": "x", "predicate": {"attr": "a", "comparator": "=", "value": 1}},
+                "quantity": {"type": "expectation", "attr": "x"},
                 "comparator": ">",
-                "referent": {"type": "expectation", "attr": "x", "predicate": {"attr": "a", "comparator": "=", "value": 0}},
+                "referent": None,
             },
         }
-        checker = ReferenceChecker()
+        checker = ReferentChecker()
         result = checker.extract_from_ir(ir)
+        assert result.value == "missing"
         assert result.exists is True
-        assert result.value["type"] == "expectation"
+
+    def test_referent_extracts_quantity(self):
+        """Quantity referent should be categorized as 'quantity'."""
+        from guidepost.campsite_lib.si_checkers import ReferentChecker
+
+        checker = ReferentChecker()
+        result = checker.extract_from_ir(self.QUANTITY_REFERENT_IR)
+        assert result.value == "quantity"
+        assert result.exists is True
+
+    def test_referent_is_quantity_referent(self):
+        """is_quantity_referent should detect quantity-type referents."""
+        from guidepost.campsite_lib.si_checkers import ReferentChecker
+
+        checker = ReferentChecker()
+        assert checker.is_quantity_referent(self.QUANTITY_REFERENT_IR) is True
+        assert checker.is_quantity_referent(self.SIMPLE_EXPECTATION_IR) is False
+
+    def test_referent_get_referent_quantity(self):
+        """get_referent_quantity should return the referent dict for quantity referents."""
+        from guidepost.campsite_lib.si_checkers import ReferentChecker
+
+        checker = ReferentChecker()
+        ref_qty = checker.get_referent_quantity(self.QUANTITY_REFERENT_IR)
+        assert ref_qty is not None
+        assert ref_qty["type"] == "expectation"
+        assert checker.get_referent_quantity(self.SIMPLE_EXPECTATION_IR) is None
 
     # -- EventFormChecker tests --
 
-    def test_event_form_simple(self):
+    def test_event_form_quantity_comp_threshold_conditioned(self):
+        """Expectation with predicate + const referent = quantity_comp_threshold_conditioned."""
         from guidepost.campsite_lib.si_checkers import EventFormChecker
 
         checker = EventFormChecker()
         result = checker.extract_from_ir(self.SIMPLE_EXPECTATION_IR)
-        assert result.value == "conditioned"  # Has predicate on quantity
+        assert result.value == "quantity_comp_threshold_conditioned"
         assert result.exists is True
 
-    def test_event_form_underspecified(self):
-        from guidepost.campsite_lib.si_checkers import EventFormChecker
-
-        checker = EventFormChecker()
-        result = checker.extract_from_ir(self.UNDERSPECIFIED_IR)
-        assert result.value == "underspecified"
-
-    def test_event_form_conditioned_event_predicate(self):
-        from guidepost.campsite_lib.si_checkers import EventFormChecker
-
-        checker = EventFormChecker()
-        result = checker.extract_from_ir(self.CONDITIONED_EVENT_IR)
-        assert result.value == "conditioned"
-
-    def test_event_form_truly_simple(self):
+    def test_event_form_quantity_comp_threshold(self):
+        """No predicates + const referent = quantity_comp_threshold."""
         from guidepost.campsite_lib.si_checkers import EventFormChecker
 
         ir = {
@@ -423,7 +454,70 @@ class TestSICheckers:
         }
         checker = EventFormChecker()
         result = checker.extract_from_ir(ir)
-        assert result.value == "simple"
+        assert result.value == "quantity_comp_threshold"
+
+    def test_event_form_quantity_comp_quantity(self):
+        """No predicates + quantity referent = quantity_comp_quantity."""
+        from guidepost.campsite_lib.si_checkers import EventFormChecker
+
+        ir = {
+            "type": "hypothesis",
+            "event": {
+                "type": "comparison",
+                "quantity": {"type": "expectation", "attr": "x", "predicate": None},
+                "comparator": ">",
+                "referent": {"type": "expectation", "attr": "y", "predicate": None},
+                "predicate": None,
+            },
+        }
+        checker = EventFormChecker()
+        result = checker.extract_from_ir(ir)
+        assert result.value == "quantity_comp_quantity"
+
+    def test_event_form_quantity_comp_quantity_conditioned(self):
+        """Predicate on referent quantity = quantity_comp_quantity_conditioned."""
+        from guidepost.campsite_lib.si_checkers import EventFormChecker
+
+        checker = EventFormChecker()
+        result = checker.extract_from_ir(self.QUANTITY_REFERENT_IR)
+        assert result.value == "quantity_comp_quantity_conditioned"
+
+    def test_event_form_conditioned_event_predicate(self):
+        """Event-level predicate should produce conditioned form."""
+        from guidepost.campsite_lib.si_checkers import EventFormChecker
+
+        checker = EventFormChecker()
+        result = checker.extract_from_ir(self.CONDITIONED_EVENT_IR)
+        assert result.value == "quantity_comp_threshold_conditioned"
+
+    def test_event_form_empty_event(self):
+        """Empty event should return no value."""
+        from guidepost.campsite_lib.si_checkers import EventFormChecker
+
+        checker = EventFormChecker()
+        result = checker.extract_from_ir(self.EMPTY_EVENT_IR)
+        assert result.exists is False
+
+    def test_event_form_compromised_by_component_violations(self):
+        """EventFormChecker should report compromised form when component checks fail."""
+        from guidepost.campsite_lib.si_checkers import EventFormChecker, Violation, ViolationType, Criticality
+
+        checker = EventFormChecker()
+        component_violations = [
+            Violation(
+                invariantID="event.comparator-EX-IR",
+                violationType=ViolationType.MISSING_IN_IR,
+                message="missing comparator",
+                criticality=Criticality.WARN,
+            ),
+        ]
+        violations = checker.check_with_component_violations(
+            ir=self.SIMPLE_EXPECTATION_IR,
+            component_violations=component_violations,
+        )
+        compromised = [v for v in violations if "COMPROMISED" in v.invariantID]
+        assert len(compromised) == 1
+        assert "comparator" in compromised[0].message
 
     # -- QuantitySignatureChecker tests --
 
@@ -520,24 +614,27 @@ class TestSICheckers:
         assert "a" in attrs
         assert "b" in attrs
 
-    # -- EstimandShapeChecker tests --
+    # -- ShapeChecker tests --
 
-    def test_estimand_shape_simple(self):
-        from guidepost.campsite_lib.si_checkers import EstimandShapeChecker
+    def test_shape_value(self):
+        """Expectation should have shape 'value'."""
+        from guidepost.campsite_lib.si_checkers import ShapeChecker
 
-        checker = EstimandShapeChecker()
+        checker = ShapeChecker()
         result = checker.extract_from_ir(self.SIMPLE_EXPECTATION_IR)
-        assert result.value == "simple"
+        assert result.value == "value"
 
-    def test_estimand_shape_difference(self):
-        from guidepost.campsite_lib.si_checkers import EstimandShapeChecker
+    def test_shape_difference(self):
+        """Contrast with '-' should have shape 'difference'."""
+        from guidepost.campsite_lib.si_checkers import ShapeChecker
 
-        checker = EstimandShapeChecker()
+        checker = ShapeChecker()
         result = checker.extract_from_ir(self.CONTRAST_IR)
         assert result.value == "difference"
 
-    def test_estimand_shape_ratio(self):
-        from guidepost.campsite_lib.si_checkers import EstimandShapeChecker
+    def test_shape_ratio(self):
+        """Contrast with '/' should have shape 'ratio'."""
+        from guidepost.campsite_lib.si_checkers import ShapeChecker
 
         ir = {
             "type": "hypothesis",
@@ -553,12 +650,13 @@ class TestSICheckers:
                 "referent": {"type": "const", "value": 1},
             },
         }
-        checker = EstimandShapeChecker()
+        checker = ShapeChecker()
         result = checker.extract_from_ir(ir)
         assert result.value == "ratio"
 
-    def test_estimand_shape_nested_difference(self):
-        from guidepost.campsite_lib.si_checkers import EstimandShapeChecker
+    def test_shape_nested_flattened_to_difference(self):
+        """RV wrapping a contrast should flatten to 'difference' (not 'nested_difference')."""
+        from guidepost.campsite_lib.si_checkers import ShapeChecker
 
         ir = {
             "type": "hypothesis",
@@ -578,60 +676,36 @@ class TestSICheckers:
                 "referent": {"type": "const", "value": [0, 1]},
             },
         }
-        checker = EstimandShapeChecker()
+        checker = ShapeChecker()
         result = checker.extract_from_ir(ir)
-        assert result.value == "nested_difference"
+        assert result.value == "difference"
 
-    # -- UncertaintyShownChecker tests --
+    # -- UncertaintyChecker tests (collapsed from shown + target) --
 
-    def test_uncertainty_shown_point(self):
-        from guidepost.campsite_lib.si_checkers import UncertaintyShownChecker
+    def test_uncertainty_missing(self):
+        """Non-RV quantity should have uncertainty 'missing'."""
+        from guidepost.campsite_lib.si_checkers import UncertaintyChecker
 
-        checker = UncertaintyShownChecker()
+        checker = UncertaintyChecker()
         result = checker.extract_from_ir(self.SIMPLE_EXPECTATION_IR)
-        assert result.value == "point"
+        assert result.value == "missing"
 
-    def test_uncertainty_shown_distribution(self):
-        from guidepost.campsite_lib.si_checkers import UncertaintyShownChecker
+    def test_uncertainty_attached(self):
+        """RV quantity should have uncertainty 'attached'."""
+        from guidepost.campsite_lib.si_checkers import UncertaintyChecker
 
-        checker = UncertaintyShownChecker()
+        checker = UncertaintyChecker()
         result = checker.extract_from_ir(self.RV_IR)
-        assert result.value == "distribution"
+        assert result.value == "attached"
 
-    # -- UncertaintyTargetChecker tests --
-
-    def test_uncertainty_target_expectation(self):
-        from guidepost.campsite_lib.si_checkers import UncertaintyTargetChecker
-
-        checker = UncertaintyTargetChecker()
-        result = checker.extract_from_ir(self.RV_IR)
-        assert result.value == "expectation"
-        assert result.exists is True
-
-    def test_uncertainty_target_none_when_no_rv(self):
-        from guidepost.campsite_lib.si_checkers import UncertaintyTargetChecker
-
-        checker = UncertaintyTargetChecker()
-        result = checker.extract_from_ir(self.SIMPLE_EXPECTATION_IR)
-        assert result.exists is False
-
-    def test_uncertainty_target_no_existence_violation(self):
-        """No uncertainty is valid — should not generate existence violation."""
-        from guidepost.campsite_lib.si_checkers import UncertaintyTargetChecker
-
-        checker = UncertaintyTargetChecker()
-        violations = checker.check(ir=self.SIMPLE_EXPECTATION_IR)
-        ex_violations = [v for v in violations if "EX-" in v.invariantID]
-        assert len(ex_violations) == 0
-
-    # -- Pairwise check tests (using NL overrides) --
+    # -- Pairwise check tests (using nl_values dict) --
 
     def test_pairwise_comparator_match(self):
         from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue
 
         checker = ComparatorChecker()
-        checker.set_nl_override(ExtractedValue(value=">", exists=True))
-        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
+        nl_values = {"event.comparator": ExtractedValue(value=">", exists=True)}
+        violations = checker.check(ir=self.SIMPLE_EXPECTATION_IR, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
         assert len(pw_violations) == 0
 
@@ -639,8 +713,8 @@ class TestSICheckers:
         from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue
 
         checker = ComparatorChecker()
-        checker.set_nl_override(ExtractedValue(value="<", exists=True))
-        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
+        nl_values = {"event.comparator": ExtractedValue(value="<", exists=True)}
+        violations = checker.check(ir=self.SIMPLE_EXPECTATION_IR, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
         assert len(pw_violations) == 1
         assert pw_violations[0].expected == "<"
@@ -650,157 +724,62 @@ class TestSICheckers:
         from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue
 
         checker = ComparatorChecker()
-        checker.set_nl_override(ExtractedValue(value=None, exists=False))
-        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
+        nl_values = {"event.comparator": ExtractedValue(value=None, exists=False)}
+        violations = checker.check(ir=self.SIMPLE_EXPECTATION_IR, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-" in v.invariantID]
         assert len(pw_violations) == 0
 
-    # -- Semantic normalization pairwise tests --
+    # -- Pairwise with nl_values dict --
 
-    # ComparatorChecker normalization
+    def test_pairwise_referent_match(self):
+        """NL 'threshold' should match IR 'threshold'."""
+        from guidepost.campsite_lib.si_checkers import ReferentChecker, ExtractedValue
 
-    def test_pairwise_comparator_nl_alias_greater_than(self):
-        """NL 'greater than' should match IR '>'."""
-        from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue
-
-        checker = ComparatorChecker()
-        checker.set_nl_override(ExtractedValue(value="greater than", exists=True))
-        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
+        checker = ReferentChecker()
+        nl_values = {"event.referent": ExtractedValue(value="threshold", exists=True)}
+        violations = checker.check(ir=self.SIMPLE_EXPECTATION_IR, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
         assert len(pw_violations) == 0
 
-    def test_pairwise_comparator_nl_alias_between(self):
-        """NL 'between' (lowercase) should match IR 'BETWEEN'."""
-        from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue
+    def test_pairwise_referent_mismatch(self):
+        """NL 'quantity' should NOT match IR 'threshold'."""
+        from guidepost.campsite_lib.si_checkers import ReferentChecker, ExtractedValue
 
-        checker = ComparatorChecker()
-        checker.set_nl_override(ExtractedValue(value="between", exists=True))
-        violations = checker.check(nl="dummy", ir=self.RV_IR)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
-
-    # ReferenceChecker normalization
-
-    def test_pairwise_reference_string_number_match(self):
-        """NL '0' (string) should match IR 0 (number)."""
-        from guidepost.campsite_lib.si_checkers import ReferenceChecker, ExtractedValue
-
-        checker = ReferenceChecker()
-        checker.set_nl_override(ExtractedValue(value="0", exists=True))
-        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
-
-    def test_pairwise_reference_unspecified_match(self):
-        """NL 'unspecified' should match IR 'unspecified'."""
-        from guidepost.campsite_lib.si_checkers import ReferenceChecker, ExtractedValue
-
-        ir = {
-            "type": "hypothesis",
-            "event": {
-                "type": "comparison",
-                "quantity": {"type": "expectation", "attr": "x"},
-                "comparator": ">",
-                "referent": {"type": "unspecified"},
-            },
-        }
-        checker = ReferenceChecker()
-        checker.set_nl_override(ExtractedValue(value="unspecified", exists=True))
-        violations = checker.check(nl="dummy", ir=ir)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
-
-    def test_pairwise_reference_quantity_referent_match(self):
-        """NL description mentioning attr and type should match IR quantity referent."""
-        from guidepost.campsite_lib.si_checkers import ReferenceChecker, ExtractedValue
-
-        ir = {
-            "type": "hypothesis",
-            "event": {
-                "type": "comparison",
-                "quantity": {"type": "expectation", "attr": "x", "predicate": {"attr": "a", "comparator": "=", "value": 1}},
-                "comparator": ">",
-                "referent": {"type": "expectation", "attr": "x", "predicate": {"attr": "a", "comparator": "=", "value": 0}},
-            },
-        }
-        checker = ReferenceChecker()
-        checker.set_nl_override(ExtractedValue(value="the average x for group a=0", exists=True))
-        violations = checker.check(nl="dummy", ir=ir)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
-
-    def test_pairwise_reference_quantity_referent_mismatch(self):
-        """NL description with wrong attr should NOT match IR quantity referent."""
-        from guidepost.campsite_lib.si_checkers import ReferenceChecker, ExtractedValue
-
-        ir = {
-            "type": "hypothesis",
-            "event": {
-                "type": "comparison",
-                "quantity": {"type": "expectation", "attr": "x", "predicate": {"attr": "a", "comparator": "=", "value": 1}},
-                "comparator": ">",
-                "referent": {"type": "expectation", "attr": "x", "predicate": {"attr": "a", "comparator": "=", "value": 0}},
-            },
-        }
-        checker = ReferenceChecker()
-        checker.set_nl_override(ExtractedValue(value="the average z for group b=1", exists=True))
-        violations = checker.check(nl="dummy", ir=ir)
+        checker = ReferentChecker()
+        nl_values = {"event.referent": ExtractedValue(value="quantity", exists=True)}
+        violations = checker.check(ir=self.SIMPLE_EXPECTATION_IR, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
         assert len(pw_violations) == 1
 
-    def test_pairwise_reference_numeric_mismatch(self):
-        """NL 5 should NOT match IR 0."""
-        from guidepost.campsite_lib.si_checkers import ReferenceChecker, ExtractedValue
+    def test_pairwise_shape_match(self):
+        """NL 'difference' should match IR 'difference'."""
+        from guidepost.campsite_lib.si_checkers import ShapeChecker, ExtractedValue
 
-        checker = ReferenceChecker()
-        checker.set_nl_override(ExtractedValue(value=5, exists=True))
-        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
+        checker = ShapeChecker()
+        nl_values = {"event.quantity.shape": ExtractedValue(value="difference", exists=True)}
+        violations = checker.check(ir=self.CONTRAST_IR, nl_values=nl_values)
+        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
+        assert len(pw_violations) == 0
+
+    def test_pairwise_uncertainty_match(self):
+        """NL 'attached' should match IR 'attached'."""
+        from guidepost.campsite_lib.si_checkers import UncertaintyChecker, ExtractedValue
+
+        checker = UncertaintyChecker()
+        nl_values = {"event.quantity.uncertainty": ExtractedValue(value="attached", exists=True)}
+        violations = checker.check(ir=self.RV_IR, nl_values=nl_values)
+        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
+        assert len(pw_violations) == 0
+
+    def test_pairwise_uncertainty_mismatch(self):
+        """NL 'attached' should NOT match IR 'missing'."""
+        from guidepost.campsite_lib.si_checkers import UncertaintyChecker, ExtractedValue
+
+        checker = UncertaintyChecker()
+        nl_values = {"event.quantity.uncertainty": ExtractedValue(value="attached", exists=True)}
+        violations = checker.check(ir=self.SIMPLE_EXPECTATION_IR, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
         assert len(pw_violations) == 1
-
-    # EventFormChecker normalization
-
-    def test_pairwise_event_form_conditional_alias(self):
-        """NL 'conditional' should match IR 'conditioned'."""
-        from guidepost.campsite_lib.si_checkers import EventFormChecker, ExtractedValue
-
-        checker = EventFormChecker()
-        checker.set_nl_override(ExtractedValue(value="conditional", exists=True))
-        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
-
-    # QuantitySignatureChecker normalization
-
-    def test_pairwise_quantity_sig_mean_alias(self):
-        """NL 'mean' should match IR 'level'."""
-        from guidepost.campsite_lib.si_checkers import QuantitySignatureChecker, ExtractedValue
-
-        checker = QuantitySignatureChecker()
-        checker.set_nl_override(ExtractedValue(value="mean", exists=True))
-        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
-
-    def test_pairwise_quantity_sig_correlation_alias(self):
-        """NL 'correlation' should match IR 'association'."""
-        from guidepost.campsite_lib.si_checkers import QuantitySignatureChecker, ExtractedValue
-
-        checker = QuantitySignatureChecker()
-        # Need an IR that produces "association"
-        ir = {
-            "type": "hypothesis",
-            "event": {
-                "type": "comparison",
-                "quantity": {"type": "func", "name": "CORR"},
-                "comparator": ">",
-                "referent": {"type": "const", "value": 0},
-            },
-        }
-        checker.set_nl_override(ExtractedValue(value="correlation", exists=True))
-        violations = checker.check(nl="dummy", ir=ir)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
 
     # ConditioningChecker — fast path (both dicts)
 
@@ -809,11 +788,11 @@ class TestSICheckers:
         from guidepost.campsite_lib.si_checkers import ConditioningChecker, ExtractedValue
 
         checker = ConditioningChecker()
-        checker.set_nl_override(ExtractedValue(
+        nl_values = {"event.quantity.conditioning": ExtractedValue(
             value=[{"attr": "b", "comparator": "=", "value": 2}, {"attr": "a", "comparator": "=", "value": 1}],
             exists=True,
-        ))
-        violations = checker.check(nl="dummy", ir=self.CONDITIONED_EVENT_IR)
+        )}
+        violations = checker.check(ir=self.CONDITIONED_EVENT_IR, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
         assert len(pw_violations) == 0
 
@@ -822,11 +801,11 @@ class TestSICheckers:
         from guidepost.campsite_lib.si_checkers import ConditioningChecker, ExtractedValue
 
         checker = ConditioningChecker()
-        checker.set_nl_override(ExtractedValue(
+        nl_values = {"event.quantity.conditioning": ExtractedValue(
             value=[{"attr": "z", "comparator": "=", "value": 9}],
             exists=True,
-        ))
-        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
+        )}
+        violations = checker.check(ir=self.SIMPLE_EXPECTATION_IR, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
         assert len(pw_violations) == 1
 
@@ -837,12 +816,12 @@ class TestSICheckers:
         from guidepost.campsite_lib.si_checkers import ConditioningChecker, ExtractedValue
 
         checker = ConditioningChecker()
-        checker.set_nl_override(ExtractedValue(
+        nl_values = {"event.quantity.conditioning": ExtractedValue(
             value=["y = 1"],
             exists=True,
-        ))
+        )}
         # CONDITIONED_EVENT_IR has 2 predicates (a and b)
-        violations = checker.check(nl="dummy", ir=self.CONDITIONED_EVENT_IR)
+        violations = checker.check(ir=self.CONDITIONED_EVENT_IR, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
         assert len(pw_violations) == 1
 
@@ -854,10 +833,10 @@ class TestSICheckers:
 
         checker = ConditioningChecker()
         checker.set_judge_override(True)
-        checker.set_nl_override(ExtractedValue(
+        nl_values = {"event.quantity.conditioning": ExtractedValue(
             value=["for jobs that request GPUs", "for jobs with low GPU utilization", "for high-GPU-utilization jobs"],
             exists=True,
-        ))
+        )}
         ir = {
             "type": "hypothesis",
             "event": {
@@ -879,7 +858,7 @@ class TestSICheckers:
                 "predicate": None,
             },
         }
-        violations = checker.check(nl="dummy", ir=ir)
+        violations = checker.check(ir=ir, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
         assert len(pw_violations) == 0
 
@@ -889,10 +868,10 @@ class TestSICheckers:
 
         checker = ConditioningChecker()
         checker.set_judge_override(False)
-        checker.set_nl_override(ExtractedValue(
+        nl_values = {"event.quantity.conditioning": ExtractedValue(
             value=["for jobs that request GPUs", "for jobs with low GPU utilization", "for high-GPU-utilization jobs"],
             exists=True,
-        ))
+        )}
         ir = {
             "type": "hypothesis",
             "event": {
@@ -914,74 +893,33 @@ class TestSICheckers:
                 "predicate": None,
             },
         }
-        violations = checker.check(nl="dummy", ir=ir)
+        violations = checker.check(ir=ir, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
         assert len(pw_violations) == 1
 
-    # EstimandShapeChecker normalization
+    # -- Confidence threshold tests --
 
-    def test_pairwise_estimand_shape_subtraction_alias(self):
-        """NL 'subtraction' should match IR 'difference'."""
-        from guidepost.campsite_lib.si_checkers import EstimandShapeChecker, ExtractedValue
+    def test_low_confidence_downgrades_to_warn(self):
+        """Low-confidence NL extraction should produce WARN, not FAIL, on mismatch."""
+        from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue, Criticality
 
-        checker = EstimandShapeChecker()
-        checker.set_nl_override(ExtractedValue(value="subtraction", exists=True))
-        violations = checker.check(nl="dummy", ir=self.CONTRAST_IR)
+        checker = ComparatorChecker()
+        nl_values = {"event.comparator": ExtractedValue(value="<", exists=True, confidence=0.2)}
+        violations = checker.check(ir=self.SIMPLE_EXPECTATION_IR, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
+        assert len(pw_violations) == 1
+        assert pw_violations[0].criticality == Criticality.WARN
 
-    # UncertaintyShownChecker normalization
+    def test_high_confidence_stays_fail(self):
+        """High-confidence NL extraction should keep FAIL on mismatch."""
+        from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue, Criticality
 
-    def test_pairwise_uncertainty_shown_ci_alias(self):
-        """NL 'confidence interval' should match IR 'distribution'."""
-        from guidepost.campsite_lib.si_checkers import UncertaintyShownChecker, ExtractedValue
-
-        checker = UncertaintyShownChecker()
-        checker.set_nl_override(ExtractedValue(value="confidence interval", exists=True))
-        violations = checker.check(nl="dummy", ir=self.RV_IR)
+        checker = ComparatorChecker()
+        nl_values = {"event.comparator": ExtractedValue(value="<", exists=True, confidence=0.9)}
+        violations = checker.check(ir=self.SIMPLE_EXPECTATION_IR, nl_values=nl_values)
         pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
-
-    # UncertaintyTargetChecker normalization
-
-    def test_pairwise_uncertainty_target_mean_alias(self):
-        """NL 'the mean' should match IR 'expectation'."""
-        from guidepost.campsite_lib.si_checkers import UncertaintyTargetChecker, ExtractedValue
-
-        checker = UncertaintyTargetChecker()
-        checker.set_nl_override(ExtractedValue(value="the mean", exists=True))
-        violations = checker.check(nl="dummy", ir=self.RV_IR)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
-
-    def test_pairwise_uncertainty_target_difference_alias(self):
-        """NL 'the difference' should match IR 'contrast'."""
-        from guidepost.campsite_lib.si_checkers import UncertaintyTargetChecker, ExtractedValue
-
-        ir = {
-            "type": "hypothesis",
-            "event": {
-                "type": "comparison",
-                "quantity": {
-                    "type": "rv",
-                    "distribution": "bootstrap",
-                    "estimand": {
-                        "type": "contrast",
-                        "lhs": {"type": "expectation", "attr": "x"},
-                        "op": "-",
-                        "rhs": {"type": "expectation", "attr": "x"},
-                    },
-                },
-                "comparator": "BETWEEN",
-                "referent": {"type": "const", "value": [0, 1]},
-                "predicate": None,
-            },
-        }
-        checker = UncertaintyTargetChecker()
-        checker.set_nl_override(ExtractedValue(value="the difference", exists=True))
-        violations = checker.check(nl="dummy", ir=ir)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
+        assert len(pw_violations) == 1
+        assert pw_violations[0].criticality == Criticality.FAIL
 
     # -- SICheckRunner tests --
 
@@ -991,7 +929,6 @@ class TestSICheckers:
         runner = SICheckRunner()
         violations = runner.run_ir_only(ir=self.SIMPLE_EXPECTATION_IR)
         # Valid IR should have no existence violations for required fields
-        # (comparator, reference, event form, quantity sig, estimand shape, uncertainty shown are all present)
         ex_ir_violations = [v for v in violations if "EX-IR" in v.invariantID]
         assert len(ex_ir_violations) == 0
 
@@ -1004,7 +941,6 @@ class TestSICheckers:
         assert len(violations) > 0
         ids = [v.invariantID for v in violations]
         assert "event.comparator-EX-IR" in ids
-        assert "event.reference-EX-IR" in ids
 
     def test_runner_run_field(self):
         from guidepost.campsite_lib.si_checkers import SICheckRunner
@@ -1021,6 +957,44 @@ class TestSICheckers:
         runner = SICheckRunner()
         checker = runner.get_checker("event.comparator")
         assert isinstance(checker, ComparatorChecker)
+
+    def test_runner_ordered_execution(self):
+        """Runner should execute quantity/comparator/referent before form."""
+        from guidepost.campsite_lib.si_checkers import SICheckRunner
+
+        runner = SICheckRunner()
+        violations = runner.run_ir_only(ir=self.EMPTY_EVENT_IR)
+        ids = [v.invariantID for v in violations]
+        # Form checker should have produced a COMPROMISED violation
+        # since component checkers found violations
+        compromised = [v for v in violations if "COMPROMISED" in v.invariantID]
+        assert len(compromised) == 1
+
+    def test_runner_referent_quantity_recursion(self):
+        """When referent is a quantity, quantity checks should run on it with prefixed IDs."""
+        from guidepost.campsite_lib.si_checkers import SICheckRunner
+
+        runner = SICheckRunner()
+        violations = runner.run_ir_only(ir=self.QUANTITY_REFERENT_IR)
+        ids = [v.invariantID for v in violations]
+        # Check that referent quantity checks produced prefixed violations
+        # The referent is a valid expectation, so no EX violations expected,
+        # but we should see no errors either
+        referent_violations = [v for v in violations if "event.referent." in v.invariantID]
+        # Referent quantity is valid — should have no violations
+        assert all("EX-IR" not in v.invariantID for v in referent_violations)
+
+    def test_runner_with_nl_values(self):
+        """Runner should accept nl_values dict for pairwise checking."""
+        from guidepost.campsite_lib.si_checkers import SICheckRunner, ExtractedValue
+
+        runner = SICheckRunner()
+        nl_values = {
+            "event.comparator": ExtractedValue(value="<", exists=True),
+        }
+        violations = runner.run_all(ir=self.SIMPLE_EXPECTATION_IR, nl_values=nl_values)
+        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID and "comparator" in v.invariantID]
+        assert len(pw_violations) == 1
 
     # -- Violation serialization --
 
@@ -1039,6 +1013,12 @@ class TestSICheckers:
         assert d["invariantID"] == "event.comparator-EX-IR"
         assert d["violationType"] == "missing_in_ir"
         assert d["criticality"] == "warn"
+
+    def test_violation_type_nl_artifact(self):
+        """NL_ARTIFACT_MISMATCH violation type should exist."""
+        from guidepost.campsite_lib.si_checkers import ViolationType
+
+        assert ViolationType.NL_ARTIFACT_MISMATCH.value == "nl_artifact_mismatch"
 
     # -- Integration test: parser + runner --
 
@@ -1066,7 +1046,7 @@ class TestSICheckers:
         ex_ir_violations = [v for v in violations if "EX-IR" in v.invariantID]
         assert len(ex_ir_violations) == 0
 
-    # -- Fix 3: EventFormChecker referent predicate --
+    # -- EventFormChecker referent predicate --
 
     def test_event_form_conditioned_by_referent_predicate(self):
         """EventFormChecker should detect conditioning in referent subtree."""
@@ -1087,9 +1067,9 @@ class TestSICheckers:
         }
         checker = EventFormChecker()
         result = checker.extract_from_ir(ir)
-        assert result.value == "conditioned"
+        assert result.value == "quantity_comp_quantity_conditioned"
 
-    # -- Fix 5: ErrorNode produces MALFORMED violations --
+    # -- ErrorNode produces MALFORMED violations --
 
     def test_error_node_event_produces_malformed(self):
         """ErrorNode at event level should produce MALFORMED violations."""
@@ -1134,9 +1114,9 @@ class TestSICheckers:
         qty_malformed = [v for v in qty_violations if v.violationType == ViolationType.MALFORMED]
         assert len(qty_malformed) == 1
 
-    def test_error_node_referent_affects_reference_checker(self):
-        """ErrorNode in referent should produce MALFORMED from ReferenceChecker."""
-        from guidepost.campsite_lib.si_checkers import ReferenceChecker, ViolationType
+    def test_error_node_referent_affects_referent_checker(self):
+        """ErrorNode in referent should produce MALFORMED from ReferentChecker."""
+        from guidepost.campsite_lib.si_checkers import ReferentChecker, ViolationType
 
         ir = {
             "type": "hypothesis",
@@ -1148,106 +1128,10 @@ class TestSICheckers:
                 "predicate": None,
             },
         }
-        checker = ReferenceChecker()
+        checker = ReferentChecker()
         violations = checker.check(ir=ir)
         malformed = [v for v in violations if v.violationType == ViolationType.MALFORMED]
         assert len(malformed) == 1
-
-    # -- Fix 6: Float near-equality --
-
-    def test_reference_float_near_equality(self):
-        """Float values that are nearly equal should match."""
-        from guidepost.campsite_lib.si_checkers import ReferenceChecker, ExtractedValue
-
-        checker = ReferenceChecker()
-        # 0.1 + 0.2 != 0.3 in IEEE 754, but should match via math.isclose
-        checker.set_nl_override(ExtractedValue(value=0.1 + 0.2, exists=True))
-        ir = {
-            "type": "hypothesis",
-            "event": {
-                "type": "comparison",
-                "quantity": {"type": "expectation", "attr": "x", "predicate": None},
-                "comparator": ">",
-                "referent": {"type": "const", "value": 0.3},
-                "predicate": None,
-            },
-        }
-        violations = checker.check(nl="dummy", ir=ir)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
-
-    # -- Fix 7: Confidence threshold --
-
-    def test_low_confidence_downgrades_to_warn(self):
-        """Low-confidence NL extraction should produce WARN, not FAIL, on mismatch."""
-        from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue, Criticality
-
-        checker = ComparatorChecker()
-        checker.set_nl_override(ExtractedValue(value="<", exists=True, confidence=0.2))
-        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 1
-        assert pw_violations[0].criticality == Criticality.WARN
-
-    def test_high_confidence_stays_fail(self):
-        """High-confidence NL extraction should keep FAIL on mismatch."""
-        from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue, Criticality
-
-        checker = ComparatorChecker()
-        checker.set_nl_override(ExtractedValue(value="<", exists=True, confidence=0.9))
-        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 1
-        assert pw_violations[0].criticality == Criticality.FAIL
-
-    # -- Fix 8: NL alias additions --
-
-    def test_comparator_higher_than_alias(self):
-        """NL 'higher than' should normalize to '>'."""
-        from guidepost.campsite_lib.si_checkers import ComparatorChecker, ExtractedValue
-
-        checker = ComparatorChecker()
-        checker.set_nl_override(ExtractedValue(value="higher than", exists=True))
-        violations = checker.check(nl="dummy", ir=self.SIMPLE_EXPECTATION_IR)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        assert len(pw_violations) == 0
-
-    def test_comparator_no_more_than_alias(self):
-        """NL 'no more than' should normalize to '<='."""
-        from guidepost.campsite_lib.si_checkers import ComparatorChecker
-
-        checker = ComparatorChecker()
-        assert checker._normalize_nl_value("no more than") == "<="
-
-    def test_event_form_unconditioned_typo_fix(self):
-        """'unconditioned' (correctly spelled) should normalize to 'simple'."""
-        from guidepost.campsite_lib.si_checkers import EventFormChecker
-
-        checker = EventFormChecker()
-        assert checker._normalize_nl_value("unconditioned") == "simple"
-
-    # -- Fix 11: Numeric string guard in ReferenceChecker --
-
-    def test_reference_numeric_string_does_not_hit_dict_path(self):
-        """NL numeric string '50000' should not match a quantity-type referent via substring."""
-        from guidepost.campsite_lib.si_checkers import ReferenceChecker, ExtractedValue
-
-        ir = {
-            "type": "hypothesis",
-            "event": {
-                "type": "comparison",
-                "quantity": {"type": "expectation", "attr": "salary", "predicate": None},
-                "comparator": ">",
-                "referent": {"type": "expectation", "attr": "salary", "predicate": {"attr": "dept", "comparator": "=", "value": "eng"}},
-                "predicate": None,
-            },
-        }
-        checker = ReferenceChecker()
-        checker.set_nl_override(ExtractedValue(value="50000", exists=True))
-        violations = checker.check(nl="dummy", ir=ir)
-        pw_violations = [v for v in violations if "PW-NLIR" in v.invariantID]
-        # Should produce a mismatch — "50000" is not a description of the quantity referent
-        assert len(pw_violations) == 1
 
 
 class TestComparatorScanner:
@@ -1589,6 +1473,66 @@ class TestIRAst:
         assert err.type == "error"
         assert err.boundary == "event"
         assert err.message == "Test error"
+
+
+class TestNLExtractors:
+    """Tests for the NL extractor classes."""
+
+    def test_comparator_normalize_greater_than(self):
+        from guidepost.campsite_lib.nl_extractors import ComparatorNLExtractor
+
+        extractor = ComparatorNLExtractor()
+        assert extractor.normalize("greater than") == ">"
+        assert extractor.normalize("higher than") == ">"
+        assert extractor.normalize("no more than") == "<="
+        assert extractor.normalize("between") == "BETWEEN"
+
+    def test_signature_normalize_aliases(self):
+        from guidepost.campsite_lib.nl_extractors import SignatureNLExtractor
+
+        extractor = SignatureNLExtractor()
+        assert extractor.normalize("mean") == "level"
+        assert extractor.normalize("correlation") == "association"
+        assert extractor.normalize("slope") == "trend"
+
+    def test_shape_normalize_aliases(self):
+        from guidepost.campsite_lib.nl_extractors import ShapeNLExtractor
+
+        extractor = ShapeNLExtractor()
+        assert extractor.normalize("subtraction") == "difference"
+        assert extractor.normalize("division") == "ratio"
+        assert extractor.normalize("simple") == "value"
+
+    def test_uncertainty_normalize_aliases(self):
+        from guidepost.campsite_lib.nl_extractors import UncertaintyNLExtractor
+
+        extractor = UncertaintyNLExtractor()
+        assert extractor.normalize("confidence interval") == "attached"
+        assert extractor.normalize("none") == "missing"
+        assert extractor.normalize("point") == "missing"
+
+    def test_form_normalize_aliases(self):
+        from guidepost.campsite_lib.nl_extractors import FormNLExtractor
+
+        extractor = FormNLExtractor()
+        assert extractor.normalize("conditional") == "quantity_comp_threshold_conditioned"
+        assert extractor.normalize("unconditioned") == "quantity_comp_threshold"
+        assert extractor.normalize("simple") == "quantity_comp_threshold"
+
+    def test_nl_extractor_orchestrator(self):
+        """NLExtractor.extract_all should return a dict with all field IDs."""
+        from guidepost.campsite_lib.nl_extractors import NLExtractor
+
+        extractor = NLExtractor()
+        # Can't actually call extract_all without LLM, but verify structure
+        assert extractor.get_extractor("event.comparator") is not None
+        assert extractor.get_extractor("event.referent") is not None
+        assert extractor.get_extractor("event.quantity.signature") is not None
+        assert extractor.get_extractor("event.quantity.conditioning") is not None
+        assert extractor.get_extractor("event.quantity.shape") is not None
+        assert extractor.get_extractor("event.quantity.uncertainty") is not None
+        assert extractor.get_extractor("event.form") is not None
+        assert extractor.get_extractor("nonexistent") is None
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from .campsite_lib.utils import AnalysisState, log
 from .campsite_lib.analysis_graph import analysis_assistant
 from .campsite_lib.ir_parser import parse_hypothesis, hypothesis_to_dict
 from .campsite_lib.si_checkers import SICheckRunner
+from .campsite_lib.nl_extractors import NLExtractor
 
 
 def create_app() -> Flask:
@@ -133,7 +134,9 @@ def create_app() -> Flask:
         # Run semantic invariant checks
         runner = SICheckRunner()
         if nl_hyp:
-            violations = runner.run_all(nl=nl_hyp, ir=ir_dict)
+            nl_extractor = NLExtractor()
+            nl_values = nl_extractor.extract_all(nl_hyp)
+            violations = runner.run_all(nl_values=nl_values, ir=ir_dict)
         else:
             violations = runner.run_ir_only(ir=ir_dict)
 
