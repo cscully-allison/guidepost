@@ -76,10 +76,10 @@ async def hypothesis_node(state: AnalysisState) -> AnalysisState:
 
     response = await llm.ainvoke(
         f"""Generate a formal statistical hypothesis from this question: {state.initialUserQuestion}
-{clarifications_text}
-and this data summary: {json.dumps(state.dataSummary)}
-{refinement_text}
-"""
+            {clarifications_text}
+            and this data summary: {json.dumps(state.dataSummary)}
+            {refinement_text}
+        """
     )
 
     log(f"Hypothesis Node End {response.content}\n-------------------------\n")

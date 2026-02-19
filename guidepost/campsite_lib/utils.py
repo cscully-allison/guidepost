@@ -24,7 +24,10 @@ class AnalysisState(BaseModel):
     refinementReport: Optional[str] = None
 
     hypothesis: Optional[str] = None
+    contextual_information: Optional[str] = None
     code: Optional[str] = None
+    vega_lite_spec: Optional[str] = None
+    explanation: Optional[str] = None
 
     clarificationNeeded: Optional[bool] = None
     userPrompt: Optional[str] = None

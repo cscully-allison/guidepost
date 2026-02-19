@@ -10,6 +10,7 @@ import pandas as pd
 import traitlets
 import anywidget
 import uuid
+import json
 
 from .utils import (
     validate_and_clean_dataframe,
@@ -179,7 +180,11 @@ class Campsite(anywidget.AnyWidget):
         )
         self._summary_stats = extract_summary_statistics(o_df)
 
+        with open('hpc_data_summary.json', 'w+') as f:
+            f.write(json.dumps(self._summary_stats))
+
         return self._summary_stats
+
 
     def test_server(self):
         """Test the server connection."""
@@ -223,3 +228,99 @@ class Campsite(anywidget.AnyWidget):
             json={"sessionId": self._session_id, "question": q},
         )
         self.response = response.text
+
+    def test_artifact_gen(self, hypothesis, contextual_information=None):
+        """
+        Test the artifact generator with a hypothesis.
+
+        Args:
+            hypothesis: NL or structured hypothesis string
+            contextual_information: Grammar description for structured hypotheses, or None
+
+        Returns:
+            dict: Response with code
+        """
+        import requests
+
+        payload = {
+            "hypothesis": hypothesis,
+            "dataSummary": dict(self._summary_stats),
+        }
+        if contextual_information is not None:
+            payload["contextual_information"] = contextual_information
+
+        response = requests.post(
+            url=f"http://localhost:{self._server.port}/generate_artifact",
+            json=payload,
+        )
+        result = response.json()
+
+        if "error" in result:
+            print(f"Error: {result['error']}")
+            return result
+
+        print(f"--- Vega-Lite Spec ---\n{json.dumps(result['vega_lite_spec'], indent=2)}")
+        print(f"\n--- Generated Code ---\n{result['code']}")
+        print(f"\n--- Explanation ---\n{result['explanation']}")
+
+        return result
+
+    def extract_nl_invariants(self, hypotheses_df, output_dir="."):
+        import csv
+        import os
+        from .campsite_lib.nl_extractors import NLExtractor
+
+        CANONICAL_FIELDS = [
+            "event.comparator", "event.referent",
+            "event.quantity.signature", "event.quantity.conditioning",
+            "event.quantity.shape", "event.quantity.uncertainty", "event.form",
+            "event.referent.quantity.signature",
+            "event.referent.quantity.conditioning",
+            "event.referent.quantity.shape",
+            "event.referent.quantity.uncertainty",
+        ]
+
+        meta_headers = ["hypothesis_id"]
+        for field in CANONICAL_FIELDS:
+            meta_headers += [f"{field}.value", f"{field}.confidence", f"{field}.rationale"]
+
+        values_path = os.path.join(output_dir, "nl_values.csv")
+        metadata_path = os.path.join(output_dir, "nl_metadata.csv")
+
+        nl_extractor = NLExtractor()
+        all_results = []
+
+        with open(values_path, "w", newline="") as vf, \
+             open(metadata_path, "w", newline="") as mf:
+            val_writer = csv.writer(vf)
+            meta_writer = csv.writer(mf)
+
+            val_writer.writerow(["hypothesis_id"] + CANONICAL_FIELDS)
+            meta_writer.writerow(meta_headers)
+
+            for _, row in hypotheses_df.iterrows():
+                hyp_id = row["hypothesis_id"]
+                nl = row["hypothesis_text"]
+                nl_values = nl_extractor.extract_all(nl)
+                all_results.append((hyp_id, nl_values))
+
+                val_row = [hyp_id]
+                for field in CANONICAL_FIELDS:
+                    ev = nl_values.get(field)
+                    val_row.append(str(ev.value) if ev and ev.exists else "")
+                val_writer.writerow(val_row)
+                vf.flush()
+
+                meta_row = [hyp_id]
+                for field in CANONICAL_FIELDS:
+                    ev = nl_values.get(field)
+                    if ev and ev.exists:
+                        meta_row += [str(ev.value), str(ev.confidence), ev.metadata.get("rationale", "")]
+                    else:
+                        meta_row += ["", "", ""]
+                meta_writer.writerow(meta_row)
+                mf.flush()
+
+        return all_results
+
+

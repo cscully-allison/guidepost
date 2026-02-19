@@ -5,6 +5,7 @@ from langgraph.graph import StateGraph, END, START
 
 from .utils import AnalysisState, llm, log
 from .hypothesis_node import hypothesis_node
+from .artifact_gen import generate_artifact
 
 
 async def vagueness_check(
@@ -208,24 +209,21 @@ Respond with a json object with three elements:
 
 
 async def artifact_gen_node(state: AnalysisState) -> AnalysisState:
-    """
-    Artifact generation node - generates code/visualization.
-    """
+    """Artifact generation node - LLM generates an Altair visualization."""
     log("Artifact Node Start\n")
 
-    response = await llm.ainvoke(
-        f"""Generate a function that outputs a single visualization which enables users to test the hypothesis expressed here: {state.hypothesis},
-using the data summarized as: {json.dumps(state.dataSummary)}.
-
-The visualization should visualize the models primary quantity of interest and may (when appropriate) annotate the visualization with threshold(s) that may show comparisons necessary for testing a hypothesis visually.
-
-Model code and data transformations should be in Python and use common data science libraries such as statsmodels, pandas, numpy. Visualization code should use the Altair library and pass in vega-lite-based specifications where necessary"""
+    result, code = await generate_artifact(
+        hypothesis=state.hypothesis,
+        data_summary=state.dataSummary,
+        contextual_information=state.contextual_information,
     )
 
-    log(f"Code Node End {response.content}\n-------------------------\n")
-
-    state.code = str(response.content)
+    state.code = code
+    state.vega_lite_spec = result.vega_lite_spec
+    state.explanation = result.explanation
     state.stage = "done"
+
+    log(f"Artifact Node End\n  code length: {len(code)}\n-------------------------\n")
     return state
 
 

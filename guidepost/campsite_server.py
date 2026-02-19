@@ -107,10 +107,13 @@ def create_app() -> Flask:
         del sessions[session_id]
 
         # Return final result
+        vega_spec = json.loads(result_state.vega_lite_spec) if result_state.vega_lite_spec else None
         return jsonify({
             "waiting": False,
             "hypothesis": result_state.hypothesis,
+            "vega_lite_spec": vega_spec,
             "code": result_state.code,
+            "explanation": result_state.explanation,
         })
 
     @app.route("/ping", methods=["GET"])
@@ -147,6 +150,31 @@ def create_app() -> Flask:
             "parseErrors": parse_errors,
             "violations": all_violations,
         })
+    
+    
+    @app.route("/generate_artifact", methods=["POST"])
+    def generate_artifact_endpoint():
+        """Generate a visualization artifact from a hypothesis."""
+        from .campsite_lib.artifact_gen import generate_artifact
+
+        data = request.get_json()
+        hypothesis = data.get("hypothesis", "")
+        data_summary = data.get("dataSummary", {})
+        contextual_information = data.get("contextual_information", None)
+
+        try:
+            result, code_result = run_async(generate_artifact(
+                hypothesis=hypothesis,
+                data_summary=data_summary,
+                contextual_information=contextual_information,
+            ))
+            return jsonify({
+                "vega_lite_spec": result.parsed_vega_lite_spec,
+                "code": code_result,
+                "explanation": result.explanation,
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
     return app
 

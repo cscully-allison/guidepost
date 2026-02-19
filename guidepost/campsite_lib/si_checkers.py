@@ -806,12 +806,21 @@ class SICheckRunner:
                         "predicate": None,
                     },
                 }
+                # Remap nl_values: convert "event.referent.quantity.*" keys
+                # back to "event.quantity.*" so quantity checkers find them
+                referent_nl_values = None
+                if nl_values:
+                    referent_nl_values = {}
+                    prefix = "event.referent."
+                    for key, val in nl_values.items():
+                        if key.startswith(prefix):
+                            referent_nl_values[f"event.{key[len(prefix):]}"] = val
                 referent_violations = self._run_quantity_checks(
-                    synthetic_ir, nl_values, artifact
+                    synthetic_ir, referent_nl_values or None, artifact
                 )
                 # Prefix violation IDs for referent quantity
                 for v in referent_violations:
-                    v.invariantID = f"event.referent.{v.invariantID}"
+                    v.invariantID = f"event.referent.{v.invariantID.removeprefix('event.')}"
                 component_violations.extend(referent_violations)
 
         # Phase 2: Event form check (derived from component violations)

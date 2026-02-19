@@ -4,7 +4,7 @@
 
 hypothesis   :- event
 
-event        :- quantity comparator referent (predicate)?
+event        :- quantity comparator referent 
              | quantity ᚦ referent
              | quantity comparator ᚦ
 
@@ -14,30 +14,10 @@ comparator   :- > | < | = | >= | <= | != | BETWEEN | IN
 
 
 ############################################
-# Quantity of interest (V3 = maximal)
+# Quantity of interest 
 ############################################
 
-quantity     :- rv
-              | estimand
-              | expr   
-
-############################################
-# Explicit uncertainty (V3 addition)
-############################################
-
-rv           :- Distribution(estimand)
-
-############################################
-# Explicit estimands (V2 addition)
-############################################
-
-estimand     :- expectation
-              | contrast
-
-expectation  :- E[attr | predicate]
-
-contrast     :- expectation fop expectation
-
+quantity     :- expr   
 
 ############################################
 # Symbolic expressions (V1 baseline)
@@ -72,22 +52,4 @@ predicate    :-  attr comparator const (^ predicate)*
 attr         :- string
 const        :- number | string | (number, number) | boolean
 
-
-############################################
-\# Model-related quantities (semantic but non-core)
-############################################
-
-extract      :- Extract(model, estimand)
-
-model        :- predictive_model
-
-
-############################################
-\# Derived quantities (NOT hypotheses)
-\# Included for clarity, not semantic comparison
-############################################
-
-probability  :- Pr(event)
-decision     :- probability comparator threshold
-threshold    :- const
 

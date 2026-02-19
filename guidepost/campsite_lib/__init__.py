@@ -20,6 +20,7 @@ from .si_checkers import (
     ExtractedValue,
 )
 from .nl_extractors import NLExtractor
+from .artifact_gen import ArtifactResult
 
 __all__ = [
     "AnalysisState",
@@ -44,4 +45,5 @@ __all__ = [
     "ViolationType",
     "Criticality",
     "ExtractedValue",
+    "ArtifactResult",
 ]

@@ -1390,9 +1390,10 @@ class TestContracts:
     def test_vis_artifact_contract(self):
         from guidepost.campsite_lib.contracts import vis_artifact_contract
 
-        assert vis_artifact_contract["output_format"] == "vega_lite"
-        assert "density_plot" in vis_artifact_contract["allowed_chart_types"]
-        assert "axes" in vis_artifact_contract["required_visual_elements"]
+        assert vis_artifact_contract["output_format"] == "altair"
+        assert "x" in vis_artifact_contract["encodings"]
+        assert "y" in vis_artifact_contract["encodings"]
+        assert "point" in vis_artifact_contract["continuous_markings"]
 
 
 class TestIRAst:
