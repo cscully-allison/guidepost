@@ -3,7 +3,6 @@ const path = require("path");
 
 const frontendFiles = [
   path.join("guidepost", "src", "guidepost.js"),
-  path.join("guidepost", "src", "campsite.ts"),
   path.join("guidepost", "src", "trailmark.js"),
 ];
 // 1️⃣ Bundle frontend files (ESM, browser)

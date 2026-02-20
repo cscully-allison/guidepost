@@ -29,14 +29,6 @@ setup(
         'scikit-learn',
         'anywidget',
         'traitlets',
-        # Campsite dependencies
-        'flask>=2.0',
-        'flask-cors>=3.0',
-        'langgraph>=0.0.20',
-        'langchain-openai>=0.0.5',
-        'lark>=1.1',
-        'pydantic>=2.0',
-        'requests>=2.25',
     ],
     classifiers=[
         'Programming Language :: Python :: 3',
