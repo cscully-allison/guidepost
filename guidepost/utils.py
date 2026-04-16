@@ -39,19 +39,12 @@ def validate_and_clean_dataframe(in_cpy, supress_warnings=False):
                 print("Warning: The following columns were dropped because they contained entirely 'na' values which guidepost does not support:[{}]".format(rmvd_cols))
         original_cols = o_df.columns
         
-    # drop rows where nans are present
-    row_count = o_df.shape[0]
-    o_df = o_df.dropna()
-    row_diff = row_count-o_df.shape[0]
-    if(row_diff>0):
-        rmvd_cols = ', '.join(col_diff)
-        report = {"na_rows_dropped": row_diff}
+    # report per-column null counts but keep the rows; downstream JS handles nulls per-axis
+    null_counts = {col: int(o_df[col].isna().sum()) for col in o_df.columns if o_df[col].isna().any()}
+    if null_counts:
+        error_report["na_column_counts"] = null_counts
         if(not supress_warnings):
-            if warn_supported_version:
-                warnings.warn("Some rows were dropped because at least one column contained 'na' values which guidepost does not support.", skip_file_prefixes=_warn_skips)
-            else:
-                print("Warning: Some rows were dropped because at least one column contained 'na' values which guidepost does not support.")
-        original_cols = o_df.columns
+            print("Warning: The following columns contain null values which will be skipped per-axis at render time: {}".format(null_counts))
     
     #drop columns which are timedelta type
     o_df = o_df.select_dtypes(exclude=['timedelta64[ns]'])

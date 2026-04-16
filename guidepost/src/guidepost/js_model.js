@@ -1,5 +1,7 @@
-import * as d3 from "https://esm.sh/d3@7";
-import { num_rows, num_cols, VALID_CONFIG_FIELDS } from "./consts";
+import * as d3 from "d3";
+import { num_rows, num_cols, VALID_CONFIG_FIELDS } from "./consts.js";
+
+const MISSING_LABEL = "(missing)";
 
 class JSModel{
     constructor(data, vars, feature_summary_stats, anywidget_model){
@@ -123,9 +125,10 @@ class JSModel{
      */
     convert_to_date(data, col){
         for(let r in data){
+            if(data[r][col] == null) continue;
             data[r][col] = new Date(data[r][col]);
         }
-        
+
         return data;
     }
     
@@ -180,61 +183,98 @@ class JSModel{
      * @returns {Object} - The summary statistics for the column.
      */
     get_summary_stats(data, col, index){
-        let sum_stats = {};
-
-        if(data.length > 0){
-            sum_stats.min = data.reduce((prev, curr) => prev[col] < curr[col] ? prev : curr)[col];
-            sum_stats.max = data.reduce((prev, curr) => prev[col] > curr[col] ? prev : curr)[col];
-            if(typeof(data[col]) != typeof("")){
-                sum_stats.sum = data.reduce((acc, current) => {
-                    if (isNaN(current[col])){
-                        return 0;
-                    }
-                    return acc + current[col];
-                }, 0);
-                sum_stats.avg = sum_stats.sum / data.length;
-                let var_std = this.calculateStandardDeviation(data, sum_stats.avg, col);
-                sum_stats.variance = var_std[0];
-                sum_stats.std = var_std[1];
+        let sum_stats;
+        if(data.length === 0){
+            sum_stats = this._empty_summary_stats();
+        } else {
+            // Find first non-null sample to detect type; nulls are skipped per-axis downstream.
+            let sample;
+            for(const row of data){
+                if(row[col] != null){ sample = row[col]; break; }
             }
-    
-            // get an array of just the y property values
-            var keyArray = data.map(function(item) { return item[col]; });
-            keyArray.sort(d3.ascending);
-    
-            // calculate a lower quantile of this array
-            sum_stats.q1 = d3.quantile(keyArray, 0.25);
-            sum_stats.q2 = d3.quantile(keyArray, 0.50);
-            sum_stats.q3 = d3.quantile(keyArray, 0.75);
-
-            //aliases
-
-            sum_stats.median = sum_stats.q2;
-            sum_stats.med = sum_stats.median;
-            sum_stats.var = sum_stats.variance;
-            sum_stats.average = sum_stats.avg;
-            sum_stats.mean = sum_stats.avg;
-            sum_stats.count = data.length;
+            if(sample === undefined){
+                sum_stats = this._empty_summary_stats();
+            } else if(typeof sample === 'string'){
+                sum_stats = this._categorical_summary_stats(data, col);
+            } else {
+                sum_stats = this._numeric_summary_stats(data, col);
+            }
         }
-        else{
-            sum_stats.sum = 0;
-            sum_stats.avg = 0;
-            sum_stats.average = 0;
-            sum_stats.mean = 0;
-            sum_stats.std = 0;
-            sum_stats.variance = 0;
-            sum_stats.var = 0;
-            sum_stats.std = 0;
-            sum_stats.median = 0;
-            sum_stats.med = 0;
-            sum_stats.count = 0;
-        }
-
-        
         sum_stats.index = index;
-
-    
         return sum_stats;
+    }
+
+    /**
+     * Returns a summary-stats object with every numeric field zeroed. Used for
+     * empty input so downstream code never sees `undefined` from min/max/etc.
+     */
+    _empty_summary_stats(){
+        const stats = {
+            min: 0, max: 0,
+            sum: 0,
+            avg: 0, average: 0, mean: 0,
+            variance: 0, var: 0, std: 0,
+            q1: 0, q2: 0, q3: 0,
+            median: 0, med: 0,
+            count: 0
+        };
+        return stats;
+    }
+
+    /**
+     * Stats for categorical (string) columns: min/max are the lexicographic
+     * extremes; numeric aggregates are zeroed (kept on the object so the shape
+     * matches the numeric branch).
+     */
+    _categorical_summary_stats(data, col){
+        const stats = this._empty_summary_stats();
+        const filtered = data.filter(d => d[col] != null);
+        if(filtered.length === 0){
+            return stats;
+        }
+        stats.min = filtered.reduce((prev, curr) => prev[col] < curr[col] ? prev : curr)[col];
+        stats.max = filtered.reduce((prev, curr) => prev[col] > curr[col] ? prev : curr)[col];
+        stats.count = filtered.length;
+        return stats;
+    }
+
+    /**
+     * Stats for numeric columns: min, max, sum, mean, variance, std, quartiles.
+     * Aliases (avg/average/mean, var/variance, med/median) are kept for
+     * backwards-compatible callers.
+     */
+    _numeric_summary_stats(data, col){
+        const filtered = data.filter(d => d[col] != null && !(typeof d[col] === 'number' && isNaN(d[col])));
+        if(filtered.length === 0){
+            const empty = this._empty_summary_stats();
+            empty.count_total = data.length;
+            return empty;
+        }
+        const stats = {};
+        stats.min = filtered.reduce((prev, curr) => prev[col] < curr[col] ? prev : curr)[col];
+        stats.max = filtered.reduce((prev, curr) => prev[col] > curr[col] ? prev : curr)[col];
+
+        stats.sum = filtered.reduce((acc, current) => acc + current[col], 0);
+        stats.avg = stats.sum / filtered.length;
+
+        const [variance, std] = this.calculateStandardDeviation(filtered, stats.avg, col);
+        stats.variance = variance;
+        stats.std = std;
+
+        const sorted = filtered.map(item => item[col]).sort(d3.ascending);
+        stats.q1 = d3.quantile(sorted, 0.25);
+        stats.q2 = d3.quantile(sorted, 0.50);
+        stats.q3 = d3.quantile(sorted, 0.75);
+
+        // aliases
+        stats.median = stats.q2;
+        stats.med = stats.median;
+        stats.var = stats.variance;
+        stats.average = stats.avg;
+        stats.mean = stats.avg;
+        stats.count = filtered.length;
+        stats.count_total = data.length;
+        return stats;
     }
 
     /**
@@ -248,8 +288,11 @@ class JSModel{
         if (typeof min !== 'number' || typeof max !== 'number' || typeof numValues !== 'number') {
             throw new Error("All arguments must be numbers");
         }
-        if (numValues <= 1) {
-            throw new Error("The number of intervals must be greater than 1");
+        if (numValues < 1) {
+            throw new Error("The number of intervals must be at least 1");
+        }
+        if (numValues === 1) {
+            return [min];
         }
 
         const step = (max - min) / (numValues - 1);
@@ -293,7 +336,7 @@ class JSModel{
      */
     calculateStandardDeviation(data, mean, key) {
         const n = data.length;
-        if (n === 0) return 0; // Avoid division by zero
+        if (n === 0) return [0, 0]; // Avoid division by zero
     
         const squaredDiffs = data.map(item => {
             const value = item[key];
@@ -313,7 +356,6 @@ class JSModel{
      * @returns {boolean} - True if the difference is more than two orders of magnitude, false otherwise.
      */
     is_more_than_n_orders_of_magnitude(min, max, order) {
-        console.log(min, max);
         if (typeof min !== 'number' || typeof max !== 'number') {
             throw new Error("Both min and max must be numbers");
         }
@@ -328,9 +370,10 @@ class JSModel{
         for (let i = 0; i < thresholds.length - 1; i++) {
             bins.push([]);
         }
-        // Place each value in the appropriate bin
+        // Place each value in the appropriate bin (skip null/NaN)
         values.forEach(d => {
             const val = accessor(d);
+            if(val == null || (typeof val === 'number' && isNaN(val))) return;
             for (let i = 0; i < thresholds.length - 1; i++) {
                 // For the last bin, include values equal to the upper bound
                 if (val >= thresholds[i] && (i === thresholds.length - 2 || val < thresholds[i + 1])) {
@@ -388,8 +431,11 @@ class JSModel{
                 stats.values = bin;
                 stats.std_ratio = stats.std / this.faceted_sum_stats[fac].color.std;
                 stats.threshold = y_axis_thresholds[index];
-                this.color_scale_range[0] = Math.min(this.color_scale_range[0], stats[this.vars.color_agg] ? stats[this.vars.color_agg] : this.color_scale_range[0]);
-                this.color_scale_range[1] = Math.max(this.color_scale_range[1], stats[this.vars.color_agg]);
+                const agg_val = stats[this.vars.color_agg];
+                if (agg_val != null) {
+                    this.color_scale_range[0] = Math.min(this.color_scale_range[0], agg_val);
+                    this.color_scale_range[1] = Math.max(this.color_scale_range[1], agg_val);
+                }
                 return stats;
             });
 
@@ -402,143 +448,207 @@ class JSModel{
     }
 
     /**
-     * Sanitizes and initializes the data for the model.
-     * @param {Array} data - The data to sanitize and initialize.
-     * @returns {Array} - The sanitized and initialized data.
+     * Sanitizes and initializes the data for the model. Acts as an orchestrator
+     * over a small pipeline of per-facet helpers; each helper owns one concern
+     * (type coercion, summary stats, scale/threshold detection, binning,
+     * categorical counts) so that the heatmap-layout shape this function
+     * produces is built up in clearly named steps.
+     * @param {Object} data - Faceted data, keyed by facet name.
+     * @returns {Object} - The sanitized and initialized data.
      */
     sanitize_and_intialize_data(data){
-        this.global_sum_stats = {
-            x:{
-                max: Number.MIN_SAFE_INTEGER,
-                min: Number.MAX_SAFE_INTEGER
-            },
-            y:{
-                max: Number.MIN_SAFE_INTEGER,
-                min: Number.MAX_SAFE_INTEGER
-            },
-            color:{
-                max: Number.MIN_SAFE_INTEGER,
-                min: Number.MAX_SAFE_INTEGER
-            },
-            num_cols: 0
-        };
+        this.global_sum_stats = this._init_global_stats_accumulator();
+
         for(let fac of this.facets){
-            //store data about what types of scales x and y are
-            this.scale_types[fac] = {
-                'x':{
-                   'log': false,
-                   'linear': false,
-                   'datetime': false 
-                },
-                'y':{
-                   'log': false,
-                   'linear': false,
-                   'datetime': false
-                }
-            };
+            this.scale_types[fac] = this._empty_scale_types();
+            this.faceted_bins[fac] = {};
 
-            if(typeof(data[fac][0][this.vars.x]) === 'string'){
-                data[fac] = this.convert_to_date(data[fac], this.vars.x);
-            }else{
-                data[fac] = this.sanitize_data_for_log(data[fac], this.vars.x);
-            }
+            this._coerce_facet_types(data, fac);
+            this._compute_facet_summary_stats(data, fac);
+            this._accumulate_global_stats(fac);
 
+            // Build the x axis (thresholds + d3 bins) and the y axis (thresholds only).
+            // _build_axis is allowed to mutate data[fac] when it needs to sanitize zeros
+            // for a log scale.
+            this._build_axis(data, fac, 'x');
+            this._build_axis(data, fac, 'y');
 
-
-            data[fac] = this.sanitize_data_for_log(data[fac], this.vars.y);
-
-            this.faceted_sum_stats[fac] = {};
-            this.faceted_sum_stats[fac].x = this.get_summary_stats(data[fac], this.vars.x);
-            this.faceted_sum_stats[fac].y = this.get_summary_stats(data[fac], this.vars.y);
-            this.faceted_sum_stats[fac].color = this.get_summary_stats(data[fac], this.vars.color);
-
-            let sum_stats = this.faceted_sum_stats[fac];
-
-            this.global_sum_stats.x.max = Math.max(this.faceted_sum_stats[fac].x.max, this.global_sum_stats.x.max);
-            this.global_sum_stats.y.max = Math.max(this.faceted_sum_stats[fac].y.max, this.global_sum_stats.y.max);
-            this.global_sum_stats.color.max = Math.max(this.faceted_sum_stats[fac].color.max, this.global_sum_stats.color.max);
-
-            this.global_sum_stats.x.min = Math.min(this.faceted_sum_stats[fac].x.min, this.global_sum_stats.x.min);
-            this.global_sum_stats.y.min = Math.min(this.faceted_sum_stats[fac].y.min, this.global_sum_stats.y.min);
-            this.global_sum_stats.color.min = Math.min(this.faceted_sum_stats[fac].color.min, this.global_sum_stats.color.max);
-
-            
-            this.faceted_bins[fac] = {}
-            
-
-
-            // console.log("SUM STATS: ", fac, sum_stats, "blahaj");
-
-            //conditional x axis thresholds based on time or numbers
-            // important for calculating the scales which layout the columns
-            // of the "heatmap"
-            if(sum_stats.x.min instanceof Date){
-                this.scale_types[fac].x.datetime = true;
-                this.x_axis_thresholds[fac] = d3.scaleUtc().domain([new Date(sum_stats.x.min), this.addDays(new Date(sum_stats.x.max),1)]).ticks(this.x_axis_time_window);
-                this.faceted_bins[fac].column = d3.bin()
-                                                    .value(d => d[this.vars.x])
-                                                    .domain([new Date(sum_stats.x.min), new Date(sum_stats.x.max)])
-                                                    .thresholds(this.x_axis_thresholds[fac])(data[fac])
-            } 
-            else if(typeof sum_stats.x.max === 'number'){
-                //Set thresholds used for defining columns based off of whether the data is wide enough to merit a log scale
-                // just do linerats if not
-                if(this.is_more_than_n_orders_of_magnitude(sum_stats.x.min, sum_stats.x.max, 3)){
-                    this.scale_types[fac].x.log = true;
-                    this.x_axis_thresholds[fac] = this.logScale(this.log_values_floor, sum_stats.x.max+1, num_cols-1);
-                    this.faceted_bins[fac].column = d3.bin()
-                                                    .value(d => d[this.vars.x])
-                                                    .domain([this.log_values_floor, sum_stats.x.max])
-                                                    .thresholds(this.x_axis_thresholds[fac])(data[fac]);
-
-                }
-                else{
-                    this.scale_types[fac].x.linear = true;
-                    this.x_axis_thresholds[fac] = this.linearScale(sum_stats.x.min, sum_stats.x.max+1, num_cols-1);
-                    this.faceted_bins[fac].column = d3.bin()
-                                                    .value(d => d[this.vars.x])
-                                                    .domain([sum_stats.x.min, sum_stats.x.max])
-                                                    .thresholds(this.x_axis_thresholds[fac])(data[fac]);
-                }
-            }
-            
-            //check if y is log or linear based on spread of data
-            if(this.is_more_than_n_orders_of_magnitude(sum_stats.y.min, sum_stats.y.max, 3)){
-                this.scale_types[fac].y.log = true;
-                this.y_axis_thresholds[fac] = this.logScale(this.log_values_floor, sum_stats.y.max, num_rows);
-            } else {
-                this.scale_types[fac].y.linear = true;
-                this.y_axis_thresholds[fac] = this.linearScale(sum_stats.y.min, sum_stats.y.max, num_rows);
-            }
-
-            sum_stats.col_counts = {
-                min: Number.MAX_SAFE_INTEGER,
-                max: Number.MIN_SAFE_INTEGER
-            };
-
-            for(let bin of this.faceted_bins[fac].column){
-                sum_stats.col_counts.max = Math.max(sum_stats.col_counts.max, bin.length);
-                sum_stats.col_counts.min = Math.min(sum_stats.col_counts.min, bin.length);
-            }
-            
-            this.global_sum_stats.num_cols = Math.max(this.faceted_bins[fac].column.length, this.global_sum_stats.num_cols);
+            this._compute_column_count_stats(fac);
+            this.global_sum_stats.num_cols = Math.max(
+                this.faceted_bins[fac].column.length,
+                this.global_sum_stats.num_cols
+            );
 
             this.calculate_box_metrics(fac, this.x_axis_thresholds[fac], this.y_axis_thresholds[fac]);
             this.calc_row_major_counts(fac);
-
-            let cat_counts = {};
-            for(let record of data[fac]){
-                if( !cat_counts[record[this.vars.categorical]] ){
-                    cat_counts[record[this.vars.categorical]] = 0;
-                }
-                cat_counts[record[this.vars.categorical]] += 1;
-            }
-
-            this.categorical_bins[fac] = Object.keys(cat_counts).map((key) => { return {"key": key, "val":cat_counts[key]} }).sort((a, b) => b['val'] - a['val']);
+            this._build_categorical_bins(data, fac);
         }
 
-
         return data;
+    }
+
+    /**
+     * Builds the {x, y, color, num_cols} skeleton used to track stats across all facets.
+     */
+    _init_global_stats_accumulator(){
+        const empty = () => ({ max: Number.MIN_SAFE_INTEGER, min: Number.MAX_SAFE_INTEGER });
+        return { x: empty(), y: empty(), color: empty(), num_cols: 0 };
+    }
+
+    /**
+     * Returns a fresh per-facet scale_types object with all flags off.
+     */
+    _empty_scale_types(){
+        return {
+            x: { log: false, linear: false, datetime: false },
+            y: { log: false, linear: false, datetime: false }
+        };
+    }
+
+    /**
+     * Coerces string x values into Date objects. Log-scale zero sanitization is
+     * intentionally deferred to _build_axis so it only runs for axes that
+     * actually use a log scale.
+     */
+    _coerce_facet_types(data, fac){
+        let sample;
+        for(const row of data[fac]){
+            if(row[this.vars.x] != null){ sample = row[this.vars.x]; break; }
+        }
+        if(typeof sample === 'string'){
+            data[fac] = this.convert_to_date(data[fac], this.vars.x);
+        }
+    }
+
+    /**
+     * Populates faceted_sum_stats[fac] with summary stats for x, y, and color.
+     */
+    _compute_facet_summary_stats(data, fac){
+        this.faceted_sum_stats[fac] = {
+            x: this.get_summary_stats(data[fac], this.vars.x),
+            y: this.get_summary_stats(data[fac], this.vars.y),
+            color: this.get_summary_stats(data[fac], this.vars.color)
+        };
+    }
+
+    /**
+     * Folds this facet's summary stats into the running global_sum_stats accumulator.
+     */
+    _accumulate_global_stats(fac){
+        const facet_stats = this.faceted_sum_stats[fac];
+        for(const axis of ['x', 'y', 'color']){
+            this.global_sum_stats[axis].max = Math.max(facet_stats[axis].max, this.global_sum_stats[axis].max);
+            this.global_sum_stats[axis].min = Math.min(facet_stats[axis].min, this.global_sum_stats[axis].min);
+        }
+    }
+
+    /**
+     * Detects the scale type for a single axis on a single facet, computes its
+     * thresholds, and (for the x axis) runs the d3.bin pass that produces the
+     * column structure consumed by the heatmap. May mutate data[fac] when log
+     * scaling requires zero values to be promoted to one.
+     * @param {Object} data - Faceted data.
+     * @param {string} fac - Facet name.
+     * @param {'x'|'y'} axis - Which axis to build.
+     */
+    _build_axis(data, fac, axis){
+        const stats = this.faceted_sum_stats[fac][axis];
+        const var_name = this.vars[axis];
+        const is_x = axis === 'x';
+        const num_thresholds = is_x ? num_cols - 1 : num_rows;
+
+        if(is_x && stats.min instanceof Date){
+            this.scale_types[fac].x.datetime = true;
+            const ticks = d3.scaleUtc()
+                .domain([new Date(stats.min), this.addDays(new Date(stats.max), 1)])
+                .ticks(this.x_axis_time_window);
+            // Ensure the first threshold is the true data min so column[0].threshold
+            // maps to scale(min) == left edge of the chart.
+            if(ticks.length === 0 || +ticks[0] !== +stats.min){
+                ticks.unshift(new Date(stats.min));
+            }
+            this.x_axis_thresholds[fac] = ticks;
+            this.faceted_bins[fac].column = this._bin_column(data[fac], var_name,
+                [new Date(stats.min), new Date(stats.max)], this.x_axis_thresholds[fac]);
+            return;
+        }
+
+        if(typeof stats.max !== 'number'){
+            return;
+        }
+
+        // Numeric axis: pick log vs linear based on spread
+        const use_log = this.is_more_than_n_orders_of_magnitude(stats.min, stats.max, 3);
+        const thresholds_target = is_x ? this.x_axis_thresholds : this.y_axis_thresholds;
+
+        if(use_log){
+            this.scale_types[fac][axis].log = true;
+            data[fac] = this.sanitize_data_for_log(data[fac], var_name);
+            // logScale's max is bumped by 1 on x to mirror prior behavior
+            thresholds_target[fac] = this.logScale(
+                this.log_values_floor,
+                is_x ? stats.max + 1 : stats.max,
+                num_thresholds
+            );
+            if(is_x){
+                this.faceted_bins[fac].column = this._bin_column(data[fac], var_name,
+                    [this.log_values_floor, stats.max], thresholds_target[fac]);
+            }
+        } else {
+            this.scale_types[fac][axis].linear = true;
+            thresholds_target[fac] = this.linearScale(
+                stats.min,
+                is_x ? stats.max + 1 : stats.max,
+                num_thresholds
+            );
+            if(is_x){
+                this.faceted_bins[fac].column = this._bin_column(data[fac], var_name,
+                    [stats.min, stats.max], thresholds_target[fac]);
+            }
+        }
+    }
+
+    /**
+     * Thin wrapper around d3.bin so the three call sites in _build_axis read uniformly.
+     */
+    _bin_column(records, var_name, domain, thresholds){
+        // Records with null/NaN x are excluded from x-binning only; they remain
+        // in the dataset and still contribute to non-x views.
+        const filtered = records.filter(d => {
+            const v = d[var_name];
+            return v != null && !(typeof v === 'number' && isNaN(v));
+        });
+        return d3.bin()
+            .value(d => d[var_name])
+            .domain(domain)
+            .thresholds(thresholds)(filtered);
+    }
+
+    /**
+     * Records the min/max number of records per column on the facet's summary stats.
+     */
+    _compute_column_count_stats(fac){
+        const sum_stats = this.faceted_sum_stats[fac];
+        sum_stats.col_counts = { min: Number.MAX_SAFE_INTEGER, max: Number.MIN_SAFE_INTEGER };
+        for(const bin of this.faceted_bins[fac].column){
+            sum_stats.col_counts.max = Math.max(sum_stats.col_counts.max, bin.length);
+            sum_stats.col_counts.min = Math.min(sum_stats.col_counts.min, bin.length);
+        }
+    }
+
+    /**
+     * Builds the {key, val}[] categorical-count list used by the bar chart, sorted descending.
+     */
+    _build_categorical_bins(data, fac){
+        const cat_counts = {};
+        for(const record of data[fac]){
+            let key = record[this.vars.categorical];
+            if(key == null) key = MISSING_LABEL;
+            cat_counts[key] = (cat_counts[key] || 0) + 1;
+        }
+        this.categorical_bins[fac] = Object.keys(cat_counts)
+            .map(key => ({ key, val: cat_counts[key] }))
+            .sort((a, b) => b.val - a.val);
     }
 
     /**
@@ -575,7 +685,7 @@ class JSModel{
         if(this.is_any_category_pinned(facet)){
             for(let cat of Object.keys(this.faceted_states[facet].pinned_category)){
                 if(this.faceted_states[facet].pinned_category[cat]){
-                    filter.indexOf() === -1 ? filter.push(cat) : null 
+                    filter.indexOf(cat) === -1 ? filter.push(cat) : null
                 }
             }
         }
@@ -606,6 +716,9 @@ class JSModel{
      * @param {Boolean} no_render - prevent double renders when called from a function which will also render
      */
     update_subselected_data(facet, targets, selection, range, no_render){
+        // NOTE: y_range is stored in DESCENDING order ([upper, lower]) because the y axis
+        // is screen-inverted. Row comparisons below read as `row >= y_range[1] && row < y_range[0]`
+        // for that reason — do not "fix" the comparison without also normalizing the range.
         this.brushed_data[facet] = [];
         if(range == "x"){
             this.brushed_ranges[facet].x_range = selection;
@@ -677,9 +790,13 @@ class JSModel{
      * @param {Array} data - The new data to update.
      */
     update_data(data){
-        this.data = this.list_major(data);
-        this.data = this.facet(this.data, this.var_specifications['facet_by']);
-        this.facets = Object.keys(data);
+        this.list_major_data = this.list_major(data);
+        this.data = this.facet(this.list_major_data, this.vars['facet_by']);
+        this.facets = Object.keys(this.data);
+        this.sanitize_and_intialize_data(this.data);
+        for(let facet of this.facets){
+            this.faceted_states[facet].original_bins = JSON.stringify(this.faceted_bins[facet]);
+        }
     }
 
     /**
@@ -779,4 +896,4 @@ class JSModel{
 
 }
 
-export {JSModel}
+export {JSModel, MISSING_LABEL}

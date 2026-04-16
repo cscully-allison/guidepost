@@ -165,6 +165,146 @@ function retrieve_options_from_data(sum_stats){
     return local_config_fields;
 }
 
-export function load_smart_default_configs(sum_stats){
-    return retrieve_options_from_data(sum_stats);
+export function load_smart_default_configs(sum_stats, data){
+    // Bucket columns by semantic type
+    const datetime_cols = [];
+    const continuous = [];
+    const ordinal = [];
+    const categorical = [];
+    // Detect datetime via dtype OR by sampling actual values: pandas often
+    // loads date columns as object/string, in which case the summary stats
+    // call them "categorical" and dtype is "object". We sniff the data to
+    // find string columns whose values parse as valid dates (and aren't just
+    // numbers, which Date() will happily accept as ms-since-epoch).
+    const looks_like_datetime_value = (v) => {
+        if(typeof v !== 'string') return false;
+        if(/^-?\d+(\.\d+)?$/.test(v.trim())) return false; // pure number
+        const t = Date.parse(v);
+        return !isNaN(t);
+    };
+    const is_datetime = (col) => {
+        const dt = sum_stats[col]['dtype'] || '';
+        if(dt.indexOf('datetime') !== -1) return true;
+        if(!data || !data[col]) return false;
+        // Sample up to 5 non-null values; require all sampled to look like dates.
+        let checked = 0;
+        let ok = 0;
+        for(const k in data[col]){
+            const v = data[col][k];
+            if(v == null) continue;
+            checked++;
+            if(looks_like_datetime_value(v)) ok++;
+            if(checked >= 5) break;
+        }
+        return checked > 0 && ok === checked;
+    };
+    for(let col in sum_stats){
+        const t = sum_stats[col]['semantic_type'];
+        if(is_datetime(col)){
+            datetime_cols.push(col);
+        } else if(t === 'continuous'){
+            continuous.push(col);
+        } else if(t === 'ordinal'){
+            ordinal.push(col);
+        } else if(t === 'categorical'){
+            categorical.push(col);
+        }
+    }
+
+    // Categorical ranking: 2 < n_unique < 20, prefer cardinality nearest to 6.
+    const categorical_pool = categorical
+        .filter(c => {
+            const n = sum_stats[c]['n_unique'];
+            return n != null && n > 2 && n < 20;
+        })
+        .sort((a, b) => Math.abs(sum_stats[a]['n_unique'] - 6) - Math.abs(sum_stats[b]['n_unique'] - 6));
+
+    const defaults = { color_agg: 'avg' };
+    const used = new Set();
+    const take = (pool) => {
+        for(const c of pool){
+            if(!used.has(c)){
+                used.add(c);
+                return c;
+            }
+        }
+        return undefined;
+    };
+
+    const facet_by = take(categorical_pool);
+    if(facet_by !== undefined) defaults['facet_by'] = facet_by;
+
+    const cat_choice = take(categorical_pool);
+    if(cat_choice !== undefined) defaults['categorical'] = cat_choice;
+
+    // Per-facet variance check: a numerical column is "good" if at least half
+    // of facets have non-trivial variance in it. This filters out columns that
+    // are all-zeros (or constant) within each facet — a global std can look
+    // healthy even when every facet is flat.
+    const eps = 1e-12;
+    const has_facet_variance = (col) => {
+        if(!data || !facet_by || !data[col] || !data[facet_by]) return true;
+        const colvals = data[col];
+        const facetvals = data[facet_by];
+        const groups = {};
+        for(const k in colvals){
+            const v = colvals[k];
+            if(v == null) continue;
+            const f = facetvals[k];
+            if(f == null) continue;
+            (groups[f] = groups[f] || []).push(typeof v === 'number' ? v : Number(new Date(v)));
+        }
+        const facet_keys = Object.keys(groups);
+        if(facet_keys.length === 0) return false;
+        let good = 0;
+        for(const f of facet_keys){
+            const arr = groups[f];
+            if(arr.length < 2) continue;
+            const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+            let ss = 0;
+            let min = arr[0], max = arr[0];
+            for(const v of arr){
+                ss += (v - mean) * (v - mean);
+                if(v < min) min = v;
+                if(v > max) max = v;
+            }
+            // Reject flat facets directly: if min == max the facet is constant
+            // (covers the all-zeros case where CoV is ill-defined).
+            if(min === max) continue;
+            const std = Math.sqrt(ss / arr.length);
+            const denom = Math.max(Math.abs(mean), eps);
+            if(std / denom > 1e-6) good++;
+        }
+        return good >= Math.ceil(facet_keys.length / 2);
+    };
+
+    // Numerical ranking: continuous by CoV; ordinal as fallback tier.
+    const normalized_var = (col) => {
+        const s = sum_stats[col];
+        const std = s['std'];
+        const mean = s['mean'];
+        if(std == null || mean == null) return -Infinity;
+        return Math.abs(std) / Math.max(Math.abs(mean), eps);
+    };
+    const continuous_ranked = continuous.slice().sort((a, b) => normalized_var(b) - normalized_var(a));
+    const ordinal_ranked = ordinal.slice().sort((a, b) => {
+        const ua = sum_stats[a]['n_unique'] || 0;
+        const ub = sum_stats[b]['n_unique'] || 0;
+        return ub - ua;
+    });
+    const numeric_only_pool = continuous_ranked.concat(ordinal_ranked).filter(has_facet_variance);
+    const datetime_pool = datetime_cols.filter(has_facet_variance);
+
+    // X-axis: prefer datetime columns, then numeric.
+    const x_pool = datetime_pool.concat(numeric_only_pool);
+    const x_choice = take(x_pool);
+    if(x_choice !== undefined) defaults['x'] = x_choice;
+
+    const y_choice = take(numeric_only_pool);
+    if(y_choice !== undefined) defaults['y'] = y_choice;
+
+    const color_choice = take(numeric_only_pool);
+    if(color_choice !== undefined) defaults['color'] = color_choice;
+
+    return defaults;
 }

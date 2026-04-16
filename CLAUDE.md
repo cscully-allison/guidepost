@@ -8,8 +8,9 @@ Guidepost is a Python/JavaScript library for visualizing HPC (High Performance C
 
 **Key modules:**
 - **Guidepost** - Core visualization widget (Python + D3.js frontend)
-- **Campsite** - AI-powered analysis assistant with Node.js backend (TypeScript/LangChain)
 - **Trailmark** - Alternative visualization module
+
+> Note: Campsite (the AI analysis assistant) was extracted to its own repository at `~/Programming/campsite/` and is no longer part of this repo.
 
 ## Build & Development Commands
 
@@ -17,14 +18,11 @@ Guidepost is a Python/JavaScript library for visualizing HPC (High Performance C
 # Install Python package in development mode
 pip install -e .
 
-# Build frontend bundles (compiles TS/JS to static/)
+# Build frontend bundles (compiles JS to static/)
 node esbuild.config.js
 
 # Watch for changes during development (auto-rebuilds)
 ./watch.sh
-
-# Compile Peggy grammar (for IR parser)
-npx peggy guidepost/src/campsite/lib/semantic_invariant_checker/ir_parser/grammar.pegjs -o guidepost/src/campsite/lib/semantic_invariant_checker/ir_parser/parser.js
 
 # Run JavaScript tests
 npx mocha
@@ -36,7 +34,7 @@ npx mocha
 ## Architecture
 
 ### Python-JavaScript Widget Communication
-- Python widgets (`guidepost.py`, `campsite.py`, `trailmark.py`) use `anywidget` + `traitlets` for bidirectional sync with JS frontends
+- Python widgets (`guidepost.py`, `trailmark.py`) use `anywidget` + `traitlets` for bidirectional sync with JS frontends
 - Data flows: `load_data(df)` → validation/cleaning (`utils.py`) → JSON serialization → traitlet sync → frontend rendering
 - User selections sync back via `selected_records` trait
 
@@ -47,12 +45,6 @@ npx mocha
 - **guidepost/histogram.js** - Brushable histograms for selection
 - **guidepost/barchart.js** - Categorical bar charts with click filtering
 - Bundles compile to `guidepost/static/`
-
-### Campsite (AI Analysis)
-- **campsite.py** - Python widget + `LocalNodeServer` singleton (spawns Node.js subprocess)
-- **src/campsite/server.ts** - Express server with endpoints: `/analyze`, `/parse`, `/ping`
-- **src/campsite/lib/analysis_graph.ts** - LangChain state graph for multi-turn conversation
-- **src/campsite/lib/semantic_invariant_checker/** - Peggy grammar + IR parser for validating AI-generated code
 
 ### Data Requirements
 - Minimum 3 numerical columns, 2 categorical columns
@@ -73,4 +65,4 @@ Test files are in `tests/` with pattern `*.test.js`.
 ## Key Dependencies
 
 **Python:** anywidget, traitlets, pandas, numpy, scikit-learn
-**JavaScript:** d3@7, express@5, @langchain/langgraph, @langchain/openai, peggy
+**JavaScript:** d3@7

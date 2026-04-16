@@ -91,23 +91,38 @@ export default async () => {
             model.add_view(heatmap.id_token,heatmap);
             model.add_view(legend.id_token, legend);
 
-            let compositional_rect_bbox = parent.node().getBBox();
-            running_view_height += compositional_rect_bbox.height + FACET_LAYOUT.outer_margin + FACET_LAYOUT.bottom_padding;
-            max_width = Math.max(max_width, compositional_rect_bbox.width+HISTOGRAM_LAYOUT.outer_margin);
-
-            console.log(running_view_height, compositional_rect_bbox);
+            // NOTE: getBBox() on an unattached SVG (d3.create) returns 0 in most
+            // browsers, so we size from FACET_LAYOUT.height (the same constant
+            // used to position each facet at line 68) instead of measuring.
+            running_view_height += FACET_LAYOUT.height;
+            max_width = Math.max(max_width, FULL_SVG_WIDTH + HISTOGRAM_LAYOUT.outer_margin);
 
             compositional_rect.attr('width', max_width)
-                .attr('height', Math.max(compositional_rect_bbox.height+FACET_LAYOUT.bottom_padding, 495))
+                .attr('height', FACET_LAYOUT.height)
                 .attr('fill', 'white')
                 .attr('stroke', 'black');
         }
 
 
-        svg.select('#bg-mat').attr('height', Math.max(running_view_height + FACET_LAYOUT.outer_margin + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT, 1787) )
+        // running_view_height = FACET_LAYOUT.height * num_facets. Total SVG must
+        // also include the vis_group's own translate (CONFIGURATION_LAYOUT.height
+        // + HEADER_HEIGHT), the in-group VIS_HEADER_HEIGHT, the leading
+        // FACET_LAYOUT.outer_margin used by the first facet at i=0, and
+        // FACET_LAYOUT.bottom_padding so the last facet isn't flush with the edge.
+        const total_height = Math.max(
+            running_view_height
+                + CONFIGURATION_LAYOUT.height
+                + HEADER_HEIGHT
+                + VIS_HEADER_HEIGHT
+                + FACET_LAYOUT.outer_margin
+                + FACET_LAYOUT.bottom_padding,
+            1787
+        );
+
+        svg.select('#bg-mat').attr('height', total_height)
             .attr('width', max_width + HISTOGRAM_LAYOUT.outer_margin*2);
-        
-        svg.attr('height', Math.max(running_view_height + FACET_LAYOUT.outer_margin + CONFIGURATION_LAYOUT.height + VIS_HEADER_HEIGHT, 1787))
+
+        svg.attr('height', total_height)
             .attr('width', max_width + HISTOGRAM_LAYOUT.outer_margin*2);
 
 
@@ -178,8 +193,9 @@ export default async () => {
         let vis_configs = JSON.parse(model.get("_vis_configs"));
 
         if(Object.entries(vis_configs).length <= 0){
-            let option_configs = globals.load_smart_default_configs(_summary_stats);
-            console.log(option_configs);
+            vis_configs = globals.load_smart_default_configs(_summary_stats, data);
+            model.set("_vis_configs", JSON.stringify(vis_configs));
+            model.save_changes();
         }
 
         // console.log("INITIAL RENDER CALL", vis_configs)

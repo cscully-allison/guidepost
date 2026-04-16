@@ -5,7 +5,7 @@ class Validator{
     constructor(svg, data={}, vis_configs={}){
         this.svg = svg;
         this.data = data;
-        this.vis_configs = this.vis_configs;
+        this.vis_configs = vis_configs;
     
     }
 
@@ -125,12 +125,22 @@ class Validator{
     }
 
 
-    // Function to coerce an entire column’s values to strings
+    // Function to coerce an entire column’s values to strings (preserving null/undefined)
     coerceColumnToString(columnData) {
         return Object.keys(columnData).reduce((result, key) => {
-            result[key] = String(columnData[key]);
+            const v = columnData[key];
+            result[key] = (v == null) ? null : String(v);
             return result;
         }, {});
+    }
+
+    // Returns the first non-null value in a column dict, or undefined if all null.
+    firstNonNull(columnData) {
+        for (const k of Object.keys(columnData)) {
+            const v = columnData[k];
+            if (v != null) return v;
+        }
+        return undefined;
     }
 
     /**
@@ -150,7 +160,7 @@ class Validator{
                 }
             }
             else if (key === 'x') {
-                let test_val = this.data[this.vis_configs[key]][Object.keys(this.data[this.vis_configs[key]])[0]];
+                let test_val = this.firstNonNull(this.data[this.vis_configs[key]]);
                 if (typeof test_val !== 'number'){
                     if(typeof test_val == 'string'){
                         if(!this.isValidDate(test_val)){
@@ -163,26 +173,26 @@ class Validator{
                 }
             }
             else if (key === 'y') {
-                let test_val = this.data[this.vis_configs[key]][Object.keys(this.data[this.vis_configs[key]])[0]];
+                let test_val = this.firstNonNull(this.data[this.vis_configs[key]]);
                 if (typeof test_val !== 'number'){
                         incorrect.push({ key: key, value: this.vis_configs[key], message: 'The y-axis only supports floats and integers. Please specify a different variable.' });
                 }
             }
             else if (key === 'color') {
-                let test_val = this.data[this.vis_configs[key]][Object.keys(this.data[this.vis_configs[key]])[0]];
+                let test_val = this.firstNonNull(this.data[this.vis_configs[key]]);
                 if (typeof test_val !== 'number'){
                     incorrect.push({ key: key, value: this.vis_configs[key], message: 'The color variable only supports floats and integers. Please specify a different column on your dataset or verify the datatype of this column.' });
                 }
             }
             else if (key === 'categorical'){
-                let test_val = this.data[this.vis_configs[key]][Object.keys(this.data[this.vis_configs[key]])[0]];
+                let test_val = this.firstNonNull(this.data[this.vis_configs[key]]);
                 // For categorical variables, coerce data to strings if necessary.
                 if(typeof test_val !== 'string'){
                     // Coerce the column data at this.data[this.vis_configs[key]]
-                    this.data[this.vis_configs[key]] = coerceColumnToString(this.data[this.vis_configs[key]]);
+                    this.data[this.vis_configs[key]] = this.coerceColumnToString(this.data[this.vis_configs[key]]);
                     // Re-check the data type after coercion
-                    test_val = this.data[this.vis_configs[key]][Object.keys(this.data[this.vis_configs[key]])[0]];
-                    if(typeof test_val !== 'string'){
+                    test_val = this.firstNonNull(this.data[this.vis_configs[key]]);
+                    if(test_val !== undefined && typeof test_val !== 'string'){
                         incorrect.push({ key: key, value: this.vis_configs[key], message: 'The categorical view only supports categorical variables formatted as strings. Please specify a different column on your dataset or reformat an existing column.' });
                     }
                 }

@@ -57,8 +57,10 @@ class Guidepost(anywidget.AnyWidget):
         o_df, report = validate_and_clean_dataframe(in_cpy, self.suppress_warnings)
         
         self._summary_stats = extract_summary_statistics(o_df)
-        self._vis_data = o_df.to_dict()
-        return o_df.to_dict()
+        # Replace NaN with None so JSON serialization yields null (valid JSON), not NaN
+        safe_df = o_df.astype(object).where(pd.notna(o_df), None)
+        self._vis_data = safe_df.to_dict()
+        return safe_df.to_dict()
         
     @property
     def selection(self):
