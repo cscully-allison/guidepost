@@ -38,7 +38,12 @@ let total_hist_height = globals.total_hist_height;
 export default async () => {
     let extra_state = {
         svg:d3.create("svg"),
-        validator: new Validator(d3.create("svg"))
+        validator: new Validator(d3.create("svg")),
+        // Single persistent JSModel across config/data changes.
+        // Replaces the prior pattern of constructing a new JSModel inside
+        // every reload_vis call (which re-ran list_major + the full
+        // sanitize pipeline on every dropdown selection).
+        jsmodel: null
     };
   
     function create_views(model, svg){
@@ -134,8 +139,7 @@ export default async () => {
 
     }
 
-    function reload_vis(model, svg, validator){
-            console.log("RELOAD VIS IN FUNCTIOn");
+    function reload_vis(model, svg, validator, jsmodel){
             let vis_configs = JSON.parse(model.get("_vis_configs"));
             let data = model.get("_vis_data");
             let _summary_stats = model.get("_summary_stats");
@@ -160,12 +164,20 @@ export default async () => {
                     .attr('dominant-baseline', 'middle');
 
             validator.vis_configs = vis_configs;
-            validator.data = data;
+            // _vis_data is now an opaque Arrow bytes payload — the validator
+            // can't introspect column names/types from it. Hand it the
+            // summary_stats dict instead, which carries per-column
+            // semantic_type/dtype keyed by column name.
+            validator.summary_stats = _summary_stats;
 
             if(validator.validate()){
-                let jsmodel = new JSModel(data, vis_configs, _summary_stats, model); 
+                if(!jsmodel){
+                    jsmodel = new JSModel(data, vis_configs, _summary_stats, model);
+                }
+                extra_state.jsmodel = jsmodel;
                 create_views(jsmodel, svg);
             }
+            return jsmodel;
     }
 
 
@@ -173,18 +185,36 @@ export default async () => {
     initialize({ model }) {
         // Set up shared state or event handlers
         model.on("change:_vis_configs", ()=>{
+            // Config changes (axis swap, color agg, etc.) used to rebuild the
+            // entire JSModel — list_major + sanitize_and_intialize_data — which
+            // is O(N) and dominated dropdown latency above ~100k rows. The
+            // persistent JSModel handles config diffing incrementally and
+            // only re-renders.
+            //
+            // No-op if the initial render hasn't constructed the JSModel yet
+            // (the smart-default config setter inside render() fires this
+            // synchronously before the model exists; render() then picks up
+            // the updated vis_configs on its own).
+            if(!extra_state.jsmodel) return;
+            let vis_configs = JSON.parse(model.get("_vis_configs"));
+            extra_state.jsmodel.apply_config(vis_configs);
             extra_state.svg.selectAll(".visualization_group").remove();
-            reload_vis(model,extra_state.svg, extra_state.validator);
+            create_views(extra_state.jsmodel, extra_state.svg);
         })
 
         model.on("change:_vis_data", ()=>{
+            // Data change must rebuild. Reuse the existing JSModel via
+            // update_data so views and configs persist; only fall through to
+            // a fresh reload if no model has been built yet.
+            if(!extra_state.jsmodel) return;
             extra_state.svg.selectAll(".visualization_group").remove();
-            reload_vis(model,extra_state.svg, extra_state.validator);
+            extra_state.jsmodel.update_data(model.get("_vis_data"));
+            create_views(extra_state.jsmodel, extra_state.svg);
         })
 
         return () => {
         // Optional: Called when the widget is destroyed.
-        } 
+        }
     },
     render({ model, el }) {
         // Render the widget's view into the el HTMLElement.
@@ -230,15 +260,19 @@ export default async () => {
         
 
         extra_state.validator.svg = extra_state.svg;
-        extra_state.validator.data =  data;
+        // Validator now consumes _summary_stats instead of raw row data — see
+        // reload_vis() for the rationale (Arrow payload is opaque bytes).
+        extra_state.validator.summary_stats = _summary_stats;
         extra_state.validator.vis_configs = vis_configs;
 
         let jsmodel = null;
 
         if(extra_state.validator.validate()){
+            // Construct the JSModel exactly once on initial render and hand
+            // the same instance to reload_vis. The prior code instantiated
+            // here AND inside reload_vis, doubling the cost of first load.
             jsmodel = new JSModel(data, vis_configs, _summary_stats, model);
-            reload_vis(model, extra_state.svg, extra_state.validator);
-            // create_views(jsmodel, extra_state.svg, extra_state.validator);
+            reload_vis(model, extra_state.svg, extra_state.validator, jsmodel);
         }
 
         let config_grp = extra_state.svg.append('g')

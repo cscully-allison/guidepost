@@ -77,16 +77,17 @@ class Histogram{
             this.brush = d3.brushX()
                 .extent([[OVERVIEW_LAYOUT.inner_padding, 0], [OVERVIEW_LAYOUT.width - OVERVIEW_LAYOUT.inner_padding, this.height-HISTOGRAM_LAYOUT.inner_padding]])
                 .on("end", function({selection}){
-                    let select;
+                    // Default to [] so that an unrecognized scale type (or
+                    // race where scale_types isn't yet populated) doesn't
+                    // leave `select` undefined.
+                    let select = [];
                     if(selection){
-                        if(self.model.scale_types[self.facet]['x']['datetime']){
+                        const sx = self.model.scale_types[self.facet]['x'];
+                        if(sx.datetime){
                             select = selection.map(self.scale_x.scale.invert, self.scale_x.scale).map(d3.utcDay.round);
-                        }
-                        if(self.model.scale_types[self.facet]['x']['log'] || self.model.scale_types[self.facet]['x']['linear']){
+                        } else if(sx.log || sx.linear){
                             select = selection.map(self.scale_x.scale.invert, self.scale_x.scale).map((d)=>{return d});
                         }
-                    }else{
-                        select = [];
                     }
                     self.model.update_subselected_data(self.facet, [`${self.facet}_heatmap`, `${self.facet}_legend`], select, "x");
                 });
@@ -255,17 +256,17 @@ class Histogram{
 
                                 col.append('rect')
                                     .attr('class', 'bar')
-                                    .attr('height', (d)=>{return self.scale_y(d.column_values.length)})
+                                    .attr('height', (d)=>{return self.scale_y(d.count)})
                                     .attr('width', bar_width)
                                     .attr('fill', TAN)
-                                    .attr(`transform`, (d)=>{return `translate(${0}, ${(HISTOGRAM_LAYOUT.height- self.scale_y(d.column_values.length))-2*HISTOGRAM_LAYOUT.inner_padding - axis_height})`});
+                                    .attr(`transform`, (d)=>{return `translate(${0}, ${(HISTOGRAM_LAYOUT.height- self.scale_y(d.count))-2*HISTOGRAM_LAYOUT.inner_padding - axis_height})`});
                             },
                             function(update){
                                 update.select('.bar')
                                     .transition()
                                     .duration(500)
-                                    .attr('height', (d,i)=>{return self.scale_y(self.model.faceted_bins[self.facet].column[i].column_values.length)})
-                                    .attr(`transform`, (d, i)=>{return `translate(${0}, ${(HISTOGRAM_LAYOUT.height- self.scale_y(self.model.faceted_bins[self.facet].column[i].column_values.length))-2*HISTOGRAM_LAYOUT.inner_padding - axis_height})`});
+                                    .attr('height', (d,i)=>{return self.scale_y(self.model.faceted_bins[self.facet].column[i].count)})
+                                    .attr(`transform`, (d, i)=>{return `translate(${0}, ${(HISTOGRAM_LAYOUT.height- self.scale_y(self.model.faceted_bins[self.facet].column[i].count))-2*HISTOGRAM_LAYOUT.inner_padding - axis_height})`});
                             }
                         );
             }

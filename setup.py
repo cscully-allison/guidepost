@@ -29,6 +29,8 @@ setup(
         'scikit-learn',
         'anywidget',
         'traitlets',
+        'pyarrow>=14',
+        'duckdb>=0.10',
     ],
     classifiers=[
         'Programming Language :: Python :: 3',

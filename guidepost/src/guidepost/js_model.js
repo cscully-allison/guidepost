@@ -1,14 +1,28 @@
 import * as d3 from "d3";
+import { tableFromIPC, Type } from "apache-arrow";
 import { num_rows, num_cols, VALID_CONFIG_FIELDS } from "./consts.js";
 
 const MISSING_LABEL = "(missing)";
 
 class JSModel{
     constructor(data, vars, feature_summary_stats, anywidget_model){
-        this.list_major_data = this.list_major(data);
+        // `data` can be either an Arrow IPC payload (the production path —
+        // sent over the `_vis_data` Bytes traitlet) or a dict-of-dicts (the
+        // legacy fixture shape used by tests). Detect and route accordingly.
+        this.list_major_data = this._to_records(data);
+        // The validator previously string-coerced numeric columns assigned to
+        // `categorical`; now that the validator runs on summary_stats (not raw
+        // rows) the coercion must live on the data side.
+        this._coerce_categorical_to_string(this.list_major_data, vars['categorical']);
         this.data = this.facet(this.list_major_data, vars['facet_by']);
         this.facets = Object.keys(this.data);
         this.vars = vars;
+        // Snapshot of the vars currently reflected in faceted_bins / scales /
+        // categorical_bins. apply_config diffs against this rather than
+        // this.vars because ConfigurationInterface mutates this.vars in place
+        // BEFORE firing change:_vis_configs — diffing against this.vars at
+        // that point always reports zero changes.
+        this._applied_vars = Object.assign({}, vars);
         this.anywidget_model = anywidget_model;
         // sort feature_summary_stats by key (alphabetical) so insertion order is predictable
         feature_summary_stats = Object.fromEntries(
@@ -32,8 +46,7 @@ class JSModel{
             }
             this.brushed_data[facet] = [];
             this.faceted_states[facet] = {
-                filter: [], 
-                original_bins: "",
+                filter: [],
                 pinned_category: {}
             };
         }
@@ -43,22 +56,175 @@ class JSModel{
         //faceted derived data
         this.faceted_sum_stats = {};
         this.faceted_bins = {};
-        
+
+        // Original (unfiltered) row arrays per x-bin per facet. Holds row
+        // references only (no deep copies). Used as the pristine source when
+        // filter_data_by_category or other downstream recomputes need to
+        // rebuild bin stats — replaces the old JSON-stringify snapshot.
+        this._original_column_values = {};
+
         this.row_major_counts = {};
         this.total_row_major_counts = {};
-        
+
         this.categorical_bins = {};
         this.total_categorical_bins = {};
 
         this.x_axis_time_window_ticks = d3.utcWeek.every(1);
         this.x_axis_time_window = d3.utcDay.every(1);
 
-        this.sanitize_and_intialize_data(this.data);
-
-        for(let facet of this.facets){
-            this.faceted_states[facet].original_bins = JSON.stringify(this.faceted_bins[facet]);        
+        // Comm-channel plumbing. JS sends `{type, request_id, ...}` to Python
+        // via anywidget_model.send and resolves promises keyed by request_id
+        // when the Python side replies. If the model lacks `send`/`on` (test
+        // fixtures), filter/brush automatically fall back to the JS-side
+        // pipeline so behavior is preserved.
+        this._pending_requests = new Map();
+        this._next_request_id = 0;
+        // Per-facet monotonic counter for filter requests. A reply is only
+        // applied if its generation matches the latest dispatched on that
+        // facet — otherwise out-of-order async replies (e.g., mouseover
+        // followed by mouseleave) can leave the heatmap stuck in a stale
+        // filter state.
+        this._filter_seq = {};
+        if(anywidget_model && typeof anywidget_model.on === 'function'){
+            anywidget_model.on('msg:custom', (msg) => this._handle_python_message(msg));
         }
 
+        this.sanitize_and_intialize_data(this.data);
+    }
+
+    /**
+     * True if the attached anywidget model can round-trip messages to Python.
+     */
+    _has_comm(){
+        return !!(this.anywidget_model
+            && typeof this.anywidget_model.send === 'function'
+            && typeof this.anywidget_model.on === 'function');
+    }
+
+    /**
+     * Sends a `{type, request_id, ...payload}` message to Python and returns
+     * a Promise that resolves with the reply (or rejects with the error
+     * payload). Errors include the comm channel being unavailable or the
+     * reply not arriving within `timeout_ms` — a missing reply otherwise
+     * silently hangs filter/brush forever.
+     */
+    _send_request(type, payload, timeout_ms = 5000){
+        return new Promise((resolve, reject) => {
+            if(!this._has_comm()){
+                reject(new Error('comm channel unavailable'));
+                return;
+            }
+            const request_id = `req_${++this._next_request_id}_${Date.now()}`;
+            const timer = setTimeout(() => {
+                if(this._pending_requests.has(request_id)){
+                    this._pending_requests.delete(request_id);
+                    reject(new Error(`Python reply for ${type} timed out after ${timeout_ms}ms`));
+                }
+            }, timeout_ms);
+            this._pending_requests.set(request_id, {
+                resolve: (v) => { clearTimeout(timer); resolve(v); },
+                reject:  (e) => { clearTimeout(timer); reject(e); },
+            });
+            try {
+                this.anywidget_model.send({ type, request_id, ...payload });
+            } catch(e){
+                clearTimeout(timer);
+                this._pending_requests.delete(request_id);
+                reject(e);
+            }
+        });
+    }
+
+    /**
+     * Dispatches incoming Python messages by request_id. Messages whose type
+     * ends in `_error` reject; everything else resolves.
+     */
+    _handle_python_message(msg){
+        if(!msg || typeof msg !== 'object') return;
+        const request_id = msg.request_id;
+        if(!request_id) return;
+        const pending = this._pending_requests.get(request_id);
+        if(!pending) return;
+        this._pending_requests.delete(request_id);
+        if(typeof msg.type === 'string' && msg.type.endsWith('_error')){
+            pending.reject(new Error(msg.error || 'Python error'));
+        } else {
+            pending.resolve(msg);
+        }
+    }
+
+    /**
+     * Serializes per-facet threshold dicts so JSON can carry them to Python.
+     * Date thresholds become ISO strings; numerics pass through. Both sides
+     * agree on the same wire shape — see AggregationEngine._sql_literal.
+     */
+    _serialize_thresholds(thresholds_by_facet){
+        const out = {};
+        for(const fac of Object.keys(thresholds_by_facet || {})){
+            const arr = thresholds_by_facet[fac] || [];
+            out[fac] = arr.map(v => {
+                if(v instanceof Date) return v.toISOString().replace('T', ' ').replace('Z', '');
+                return v;
+            });
+        }
+        return out;
+    }
+
+    /**
+     * Overlays Python's aggregation result onto an existing facet's bin
+     * structure. Preserves the per-bin `threshold` and `indices` that JS
+     * already computed at init — Python only ships stats. After Python's
+     * grid lands, brush selection should be routed through Python too so
+     * staleness in JS indices never affects user-visible selection.
+     */
+    _apply_python_grid(grid){
+        // Returns true if the grid landed onto at least one facet, false if
+        // it was empty or shaped wrong. Callers use the bool to decide
+        // whether to fall back to the JS-side recompute.
+        if(!grid || typeof grid !== 'object' || Object.keys(grid).length === 0) return false;
+        let applied = false;
+        for(const fac of Object.keys(grid)){
+            const columns = grid[fac] && grid[fac].columns;
+            if(!Array.isArray(columns)) continue;
+            const target = this.faceted_bins[fac] && this.faceted_bins[fac].column;
+            if(!Array.isArray(target)) continue;
+            const min_len = Math.min(columns.length, target.length);
+            for(let i = 0; i < min_len; i++){
+                const src_col = columns[i];
+                const dst_col = target[i];
+                if(!src_col || !dst_col) continue;
+                // Stats fields — preserve threshold + indices on dst_col.
+                for(const k of Object.keys(src_col)){
+                    if(k === 'bins') continue;
+                    dst_col[k] = src_col[k];
+                }
+                if(Array.isArray(src_col.bins) && Array.isArray(dst_col.bins)){
+                    const bin_len = Math.min(src_col.bins.length, dst_col.bins.length);
+                    for(let j = 0; j < bin_len; j++){
+                        const src_cell = src_col.bins[j];
+                        const dst_cell = dst_col.bins[j];
+                        if(!src_cell || !dst_cell) continue;
+                        for(const k of Object.keys(src_cell)){
+                            dst_cell[k] = src_cell[k];
+                        }
+                    }
+                }
+                // Track the global color-scale range from Python-supplied
+                // aggregates so the heatmap legend stays correct.
+                if(Array.isArray(src_col.bins)){
+                    const agg_key = this.vars.color_agg;
+                    for(const cell of src_col.bins){
+                        const v = cell && cell[agg_key];
+                        if(v != null && !Number.isNaN(v)){
+                            this.color_scale_range[0] = Math.min(this.color_scale_range[0], v);
+                            this.color_scale_range[1] = Math.max(this.color_scale_range[1], v);
+                        }
+                    }
+                }
+                applied = true;
+            }
+        }
+        return applied;
     }
 
     set_config_options(config_name, options){
@@ -85,7 +251,147 @@ class JSModel{
     }
 
     /**
-     * Converts a dictionary to a list-major format.
+     * Routes `data` into the right decoder. Production passes an Arrow IPC
+     * payload (the `_vis_data` Bytes trait); fixtures pass a plain dict.
+     * Empty/missing data yields an empty record list so the constructor can
+     * still run during early initialization races.
+     */
+    _to_records(data){
+        if(data == null) return [];
+        if(this._is_arrow_payload(data)) return this._records_from_arrow(data);
+        if(typeof data === 'object' && !Array.isArray(data)){
+            // Empty default dict before load_data has set anything.
+            const keys = Object.keys(data);
+            if(keys.length === 0) return [];
+            return this.list_major(data);
+        }
+        return [];
+    }
+
+    /**
+     * True if `data` is bytes/DataView/typed-array shape (the anywidget Bytes
+     * trait surface) rather than the legacy dict-of-dicts.
+     */
+    _is_arrow_payload(data){
+        return data instanceof DataView
+            || data instanceof ArrayBuffer
+            || (typeof Uint8Array !== 'undefined' && data instanceof Uint8Array)
+            || (typeof data === 'string' && data.length > 0 && this._looks_base64(data));
+    }
+
+    _looks_base64(s){
+        // Cheap heuristic: anywidget occasionally surfaces Bytes traits as
+        // base64 strings depending on transport. Avoid false positives on the
+        // empty default by also requiring length.
+        return s.length > 4 && /^[A-Za-z0-9+/=\n\r]+$/.test(s.slice(0, 32));
+    }
+
+    /**
+     * Decodes Arrow IPC bytes into list-major records that match the prior
+     * `list_major()` output shape — one plain object per row, keyed by
+     * column name, with an `index` field downstream consumers (D3 key fns)
+     * already rely on.
+     *
+     * Materializes to plain JS objects rather than Arrow row proxies because
+     * downstream code (`_coerce_facet_types`, `sanitize_data_for_log`) mutates
+     * row cells in place, which row proxies don't permit.
+     */
+    _records_from_arrow(bytes){
+        // Normalize to a Uint8Array so apache-arrow's `tableFromIPC` accepts it
+        // regardless of how anywidget surfaced the Bytes trait.
+        let buf;
+        if(bytes instanceof Uint8Array) buf = bytes;
+        else if(bytes instanceof ArrayBuffer) buf = new Uint8Array(bytes);
+        else if(bytes instanceof DataView) buf = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        else if(typeof bytes === 'string'){
+            const bin = atob(bytes);
+            buf = new Uint8Array(bin.length);
+            for(let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+        } else {
+            return [];
+        }
+        if(buf.byteLength === 0) return [];
+
+        const table = tableFromIPC(buf);
+        const fields = table.schema.fields;
+        // Pre-resolve each column vector once so the hot loop is a single
+        // typed-array (or generic-array) index lookup per cell instead of a
+        // per-row schema walk.
+        const vectors = fields.map(f => table.getChild(f.name));
+        const names = fields.map(f => f.name);
+        // Per-column converters normalize Arrow's `Vector.get` output:
+        //   - Int64 columns surface as BigInt; downstream code stores
+        //     gp_idx into Int32Arrays and does arithmetic with mixed numeric
+        //     columns, so coerce to Number. Safe up to 2^53 — gp_idx tops
+        //     out at row count, well below that.
+        //   - Timestamp columns surface as Date or BigInt depending on unit
+        //     and apache-arrow version; coerce to Date so _build_axis and
+        //     convert_to_date hit their datetime branches.
+        const converters = fields.map(f => this._arrow_converter(f));
+        const n = table.numRows;
+        const records = new Array(n);
+        for(let i = 0; i < n; i++){
+            const r = {};
+            for(let c = 0; c < names.length; c++){
+                r[names[c]] = converters[c](vectors[c].get(i));
+            }
+            r.index = i;
+            records[i] = r;
+        }
+        return records;
+    }
+
+    /**
+     * Returns a per-column normalizer that turns Arrow's native get() output
+     * into JS values the rest of the JSModel pipeline already handles.
+     */
+    _arrow_converter(field){
+        if(field.type.typeId === Type.Timestamp){
+            const unit = field.type.unit;
+            return (v) => {
+                if(v == null) return null;
+                if(v instanceof Date) return v;
+                if(typeof v === 'number') return new Date(v);
+                if(typeof v === 'bigint'){
+                    // Divide while still BigInt to preserve precision for
+                    // nanosecond/microsecond units before falling to Number.
+                    if(unit === 3) return new Date(Number(v / 1_000_000n));
+                    if(unit === 2) return new Date(Number(v / 1_000n));
+                    if(unit === 1) return new Date(Number(v));
+                    if(unit === 0) return new Date(Number(v) * 1000);
+                    return new Date(Number(v));
+                }
+                return v;
+            };
+        }
+        return (v) => (typeof v === 'bigint' ? Number(v) : v);
+    }
+
+    /**
+     * Coerces a column's values to strings in place so the categorical bar
+     * chart and category-filter paths can rely on string semantics even when
+     * the user picks a numeric column. The pre-Phase-2 path did this inside
+     * the Validator's variable-semantics check; moved here because the
+     * validator no longer sees raw row data.
+     */
+    _coerce_categorical_to_string(records, cat_col){
+        if(!cat_col || !records || records.length === 0) return;
+        // Sample the first non-null value to decide if coercion is needed.
+        let sample;
+        for(const r of records){
+            if(r[cat_col] != null){ sample = r[cat_col]; break; }
+        }
+        if(typeof sample === 'string' || sample === undefined) return;
+        for(const r of records){
+            const v = r[cat_col];
+            if(v != null) r[cat_col] = String(v);
+        }
+    }
+
+    /**
+     * Converts a dictionary to a list-major format. Retained for test
+     * fixtures (which still pass dict-of-dicts) and for any code that calls
+     * it directly; the production path uses `_records_from_arrow`.
      * @param {Object} dict - The dictionary to convert.
      * @returns {Array} - The list-major formatted data.
      */
@@ -395,40 +701,46 @@ class JSModel{
      */
     calculate_box_metrics(fac, x_axis_thresholds, y_axis_thresholds){
         let current_bins = this.faceted_bins[fac].column;
-        let sum_stats = this.faceted_sum_stats[fac];
+        // Pristine row arrays per x-bin, captured once after _build_axis('x').
+        // Read-only here — apply the category filter into a per-call working
+        // array instead of mutating the source.
+        let original = this._original_column_values[fac];
 
-        // console.log("CALC BOX METRICS: ", fac, current_bins, x_axis_thresholds, y_axis_thresholds);
-
-        // Iterate over the columns that divide the data along the x axis
-        
         let col_indx = 0;
+        const has_filter = this.faceted_states[fac].filter.length > 0;
+        const filter = this.faceted_states[fac].filter;
+        const cat_var = this.vars.categorical;
+
         for(let bin in current_bins){
-            let filtered_bin;
-            
-            //Do not filter if no filter is specified currently
-            if(this.faceted_states[fac].filter.length > 0){
-                filtered_bin = current_bins[bin].column_values.filter((d)=>{return this.faceted_states[fac].filter.includes(d[this.vars.categorical])});
-            }else{
-                if(current_bins[bin].column_values){
-                    filtered_bin = current_bins[bin].column_values;
-                }
-                else{
-                    filtered_bin = current_bins[bin];
-                }
-            }
+            const source = original[bin];
+            const filtered_bin = has_filter
+                ? source.filter(d => filter.includes(d[cat_var]))
+                : source;
 
             // Get summary statistics for the entire column of data before it is split into rows
             let temp_box_stats = this.get_summary_stats(filtered_bin, this.vars.y, col_indx);
             temp_box_stats.threshold = x_axis_thresholds[bin];
 
-            temp_box_stats.bins = [];
-          
+            // count of rows in this column after filter; replaces the prior
+            // column_values.length access pattern used by histogram.js so we no
+            // longer have to hand a row-array out the door.
+            temp_box_stats.count = filtered_bin.length;
+
             const customBins = this.binValues(filtered_bin, y_axis_thresholds, d => d[this.vars.y]);
 
             // Process each bin's summary statistics and update color scale range
             temp_box_stats.bins = customBins.map((bin, index) => {
                 const stats = this.get_summary_stats(bin, this.vars.color);
-                stats.values = bin;
+                // Drop the raw-row array (`stats.values = bin`) — at 1M rows
+                // it pinned ~133 row refs per cell × 7,500 cells ≈ all rows in
+                // nested form, defeating aggregation. Keep only what consumers
+                // actually need: count for emptiness/heights, indices for the
+                // brush-selection gp_idx round-trip.
+                stats.count = bin.length;
+                stats.indices = new Int32Array(bin.length);
+                for(let i = 0; i < bin.length; i++){
+                    stats.indices[i] = bin[i].gp_idx;
+                }
                 stats.std_ratio = stats.std / this.faceted_sum_stats[fac].color.std;
                 stats.threshold = y_axis_thresholds[index];
                 const agg_val = stats[this.vars.color_agg];
@@ -439,8 +751,14 @@ class JSModel{
                 return stats;
             });
 
+            // Column-level Int32Array of gp_idx for the brush's x-only path —
+            // matches the per-cell indices arrays so update_subselected_data
+            // never touches raw row objects.
+            temp_box_stats.indices = new Int32Array(filtered_bin.length);
+            for(let i = 0; i < filtered_bin.length; i++){
+                temp_box_stats.indices[i] = filtered_bin[i].gp_idx;
+            }
 
-            temp_box_stats.column_values = filtered_bin;
             this.faceted_bins[fac].column[bin] = temp_box_stats;
             col_indx += 1;
         }
@@ -472,6 +790,10 @@ class JSModel{
             // for a log scale.
             this._build_axis(data, fac, 'x');
             this._build_axis(data, fac, 'y');
+
+            // Snapshot the d3.bin row arrays as the pristine source for
+            // calculate_box_metrics. Shallow references only — no copies.
+            this._original_column_values[fac] = this.faceted_bins[fac].column.map(b => b);
 
             this._compute_column_count_stats(fac);
             this.global_sum_stats.num_cols = Math.max(
@@ -659,7 +981,7 @@ class JSModel{
         let row_counts = Array(this.faceted_bins[fac].column[0].bins.length).fill(0);
         for(let column of this.faceted_bins[fac].column){
             for(let row in column.bins){
-                row_counts[row] += column.bins[row].values.length;
+                row_counts[row] += column.bins[row].count;
             }
         }
 
@@ -674,7 +996,7 @@ class JSModel{
      * @param {string} source - The source of the filter.
      * @param {Array} targets - The targets to update.
      */
-    filter_data_by_category(filter, facet, source, targets){
+    async filter_data_by_category(filter, facet, source, targets){
 
         this.faceted_states[facet].filter = filter;
 
@@ -690,15 +1012,61 @@ class JSModel{
             }
         }
 
+        // Tag this call with a monotonically-increasing generation so that
+        // when the user rapidly hovers/leaves bars, only the latest reply
+        // is applied — older in-flight replies would otherwise land last
+        // and leave the heatmap stuck in a stale filter state.
+        const my_gen = (this._filter_seq[facet] = (this._filter_seq[facet] || 0) + 1);
 
-        this.faceted_bins[facet] = JSON.parse(this.faceted_states[facet].original_bins);
-
-        if(filter.length > 0){
-            // this.faceted_states[facet].original_bins = JSON.stringify(this.faceted_bins[facet]);
+        // Try DuckDB-backed aggregation first; it is ~3–5× faster than the
+        // JS recompute at 1M rows. Fall back to the JS path on any comm
+        // error so behavior is preserved when the channel is unavailable
+        // (e.g., test fixtures with no `send`/`on`).
+        let used_python = false;
+        if(this._has_comm()){
+            try {
+                const reply = await this._send_request('request_aggregation', {
+                    facet_by: this.vars.facet_by,
+                    x: this.vars.x,
+                    y: this.vars.y,
+                    color: this.vars.color,
+                    color_agg: this.vars.color_agg,
+                    x_thresholds_by_facet: this._serialize_thresholds(this.x_axis_thresholds),
+                    y_thresholds_by_facet: this._serialize_thresholds(this.y_axis_thresholds),
+                    category_col: this.vars.categorical,
+                    category_filter: filter.length > 0 ? filter : null,
+                });
+                // Discard stale replies: another filter dispatched after us
+                // already owns the latest state.
+                if(my_gen !== this._filter_seq[facet]) return;
+                // `_apply_python_grid` returns true only if at least one
+                // facet's bins were updated. An empty/missing grid (e.g.,
+                // the engine wasn't initialized) drops to the JS fallback.
+                used_python = this._apply_python_grid(reply && reply.grid);
+                if(!used_python){
+                    console.warn('Python aggregation returned empty grid; falling back to JS');
+                }
+            } catch(e){
+                if(my_gen !== this._filter_seq[facet]) return;
+                if(e && e.message && !/comm channel unavailable/i.test(e.message)){
+                    console.warn('Python aggregation failed, using JS fallback:', e);
+                }
+            }
+        }
+        if(!used_python){
+            // Re-aggregate from the pristine row arrays preserved by
+            // sanitize_and_intialize_data. The prior JSON.parse(JSON.stringify(...))
+            // deep-clone here scaled with N and dominated category-click latency
+            // above ~100k rows.
             this.calculate_box_metrics(facet, this.x_axis_thresholds[facet], this.y_axis_thresholds[facet]);
         }
 
-        this.update_subselected_data(facet, targets, [], "", true);
+        // Same generation check applies for downstream renders — if another
+        // filter superseded us during the brush round-trip, drop our render.
+        if(my_gen !== this._filter_seq[facet]) return;
+
+        await this.update_subselected_data(facet, targets, [], "", true);
+        if(my_gen !== this._filter_seq[facet]) return;
         this.calc_row_major_counts(facet);
 
         for(let target of targets){
@@ -715,63 +1083,98 @@ class JSModel{
      * @param {string} range - The range type ("x" or "y").
      * @param {Boolean} no_render - prevent double renders when called from a function which will also render
      */
-    update_subselected_data(facet, targets, selection, range, no_render){
+    async update_subselected_data(facet, targets, selection, range, no_render){
         // NOTE: y_range is stored in DESCENDING order ([upper, lower]) because the y axis
         // is screen-inverted. Row comparisons below read as `row >= y_range[1] && row < y_range[0]`
         // for that reason — do not "fix" the comparison without also normalizing the range.
-        this.brushed_data[facet] = [];
+        // brushed_data is a flat array of gp_idx integers (no longer raw row
+        // refs) — legend.js still reads .length, which now matches selection size.
+        // Normalize falsy selections to [] so downstream `.length` checks
+        // don't crash. The histogram brush handler has paths (e.g. when the
+        // x-scale flags aren't yet set) where `selection` reaches us as
+        // undefined; the prior behavior threw on the next `.length` read.
+        const safe_selection = Array.isArray(selection) ? selection : [];
         if(range == "x"){
-            this.brushed_ranges[facet].x_range = selection;
+            this.brushed_ranges[facet].x_range = safe_selection;
         }
         else if(range == "y"){
-            this.brushed_ranges[facet].y_range = selection;
+            this.brushed_ranges[facet].y_range = safe_selection;
         }
         else{
 
         }
 
+        const has_x_brush = this.brushed_ranges[facet].x_range.length === 2;
+        const has_y_brush = this.brushed_ranges[facet].y_range.length === 2;
+        const cat_filter = this.faceted_states[facet] && this.faceted_states[facet].filter;
+        const has_cat_filter = cat_filter && cat_filter.length > 0;
 
-        if(this.brushed_ranges[facet].x_range.length != 0){
-            for(let bin of this.faceted_bins[facet].column){
-                let test_threshold = bin.threshold;
-                if(this.scale_types[facet].x.datetime){
-                    test_threshold = new Date(test_threshold);
-                }
-                if(test_threshold >= this.brushed_ranges[facet].x_range[0] && 
-                    test_threshold <= this.brushed_ranges[facet].x_range[1]){
-                        if (this.brushed_ranges[facet].y_range.length == 0){
-                            this.brushed_data[facet] = this.brushed_data[facet].concat(bin.column_values);
-                        }
-                        else{
-                            for(let row in bin.bins){
-                                if(row >= this.brushed_ranges[facet].y_range[1] &&
-                                    row < this.brushed_ranges[facet].y_range[0]
-                                ){
-                                    this.brushed_data[facet] = this.brushed_data[facet].concat(bin.bins[row].values);
-                                }
-                            }
-                        }
+        // Brush selection is gated by an ACTIVE brush range, not by the
+        // category filter alone. Filter narrows what's *inside* the brush
+        // window, but a filter without a brush yields zero selection — the
+        // legacy JS behavior the legend tooltip and `widget.selection`
+        // round-trip both depend on.
+        if(!has_x_brush && !has_y_brush){
+            this.brushed_data[facet] = new Int32Array(0);
+        }
+        else {
+            // Python-backed brush: a single DuckDB query returns the gp_idx
+            // values for rows within the current x/y range AND active category
+            // filter. This avoids any reliance on JS-side bin.indices being
+            // up-to-date with the filter state.
+            let used_python = false;
+            if(this._has_comm()){
+                try {
+                    // X is already in data space (numeric or Date). Y has to
+                    // be converted from row-index space first. Both get the
+                    // edge extension so brushes at the leftmost/bottommost
+                    // bin capture underflow rows (data points that JS's
+                    // log-sanitize put into bin 0 but Python's SQL would
+                    // otherwise exclude with `x >= threshold[0]`).
+                    const x_extended = this._extend_brush_range_edges(
+                        facet, 'x', this.brushed_ranges[facet].x_range);
+                    const y_data = this._y_row_range_to_data(
+                        facet, this.brushed_ranges[facet].y_range);
+                    const y_extended = this._extend_brush_range_edges(
+                        facet, 'y', y_data);
+                    const reply = await this._send_request('request_brush_indices', {
+                        facet_by: this.vars.facet_by,
+                        x: this.vars.x,
+                        y: this.vars.y,
+                        facet,
+                        x_range: this._serialize_range(x_extended),
+                        y_range: y_extended,
+                        category_col: this.vars.categorical,
+                        category_filter: has_cat_filter ? cat_filter : null,
+                    });
+                    const indices = reply && reply.indices;
+                    this.brushed_data[facet] = Array.isArray(indices)
+                        ? Int32Array.from(indices)
+                        : new Int32Array(0);
+                    used_python = true;
+                } catch(e){
+                    if(e && e.message && !/comm channel unavailable/i.test(e.message)){
+                        console.warn('Python brush failed, using JS fallback:', e);
                     }
+                }
+            }
+            if(!used_python){
+                this._compute_brushed_data_js(facet);
             }
         }
-        else if(this.brushed_ranges[facet].y_range.length != 0){
-            for(let bin of this.faceted_bins[facet].column){
-                for(let row in bin.bins){
-                    if(row >= this.brushed_ranges[facet].y_range[1] &&
-                        row < this.brushed_ranges[facet].y_range[0]
-                    ){
-                        this.brushed_data[facet] = this.brushed_data[facet].concat(bin.bins[row].values);
-                    }
-                }
-            }
-        }
 
-        let return_ids = [];
-        let test = [];
+        let total_ids = 0;
         for(let fac of this.facets){
-            for(let d of this.brushed_data[fac]){
-                return_ids.push(d.gp_idx);
-                test.push({'idx':d.gp_idx, 'content':d});
+            const arr = this.brushed_data[fac];
+            if(arr && arr.length) total_ids += arr.length;
+        }
+        let return_ids = new Array(total_ids);
+        let cursor = 0;
+        for(let fac of this.facets){
+            const arr = this.brushed_data[fac];
+            if(!arr || !arr.length) continue;
+            for(let i = 0; i < arr.length; i++){
+                return_ids[cursor++] = arr[i];
             }
         }
 
@@ -786,18 +1189,277 @@ class JSModel{
     }
 
     /**
+     * Date thresholds → ISO-like strings so SQL receives a value DuckDB
+     * can coerce against TIMESTAMP columns. Numerics pass through.
+     */
+    _serialize_range(range){
+        if(!Array.isArray(range)) return [];
+        return range.map(v => {
+            if(v instanceof Date) return v.toISOString().replace('T', ' ').replace('Z', '');
+            return v;
+        });
+    }
+
+    /**
+     * Extends a brush range to capture the underflow/overflow rows that
+     * Python's `_threshold_case` puts in bin 0 / the last bin (mirroring
+     * d3.bin and JS's log-sanitized binning). Without this, brushing the
+     * leftmost column or bottommost row excludes data points with value 0
+     * — they sit below `thresholds[0]` (which is `log_values_floor = 1`
+     * for log axes) but JS would have sanitized them into bin 0. Same
+     * idea for the high edge.
+     *
+     * Returns the range with extended bounds (MIN/MAX_SAFE_INTEGER
+     * sentinels) when the brush touches the threshold edges; otherwise
+     * returns the input unchanged.
+     */
+    _extend_brush_range_edges(facet, axis, range){
+        if(!Array.isArray(range) || range.length !== 2) return range;
+        // Don't touch datetime ranges; the log-sanitization edge case
+        // doesn't apply for datetime axes.
+        if(range[0] instanceof Date || range[1] instanceof Date) return range;
+        if(typeof range[0] !== 'number' || typeof range[1] !== 'number') return range;
+        const thresholds = (axis === 'x' ? this.x_axis_thresholds : this.y_axis_thresholds)[facet];
+        if(!Array.isArray(thresholds) || thresholds.length < 2) return range;
+        let [lo, hi] = range;
+        const t_lo = Math.min(thresholds[0], thresholds[thresholds.length - 1]);
+        const t_hi = Math.max(thresholds[0], thresholds[thresholds.length - 1]);
+        // SAFE_INTEGER sentinels stay within DuckDB's INT64/DOUBLE range
+        // so the SQL parameter binds without precision concerns.
+        if(lo <= t_lo) lo = Number.MIN_SAFE_INTEGER;
+        if(hi >= t_hi) hi = Number.MAX_SAFE_INTEGER;
+        return [lo, hi];
+    }
+
+    /**
+     * Translates the Y histogram's brush range from row-index space (what
+     * d3.brushY produces via the screen-inverted scale_y) into Y data values
+     * the Python brush query can compare against the raw y column.
+     *
+     * Stored range is [high_row_idx, low_row_idx] (descending — see the
+     * comment in update_subselected_data). Returns [lo_y, hi_y] in ascending
+     * order, ready for the SQL `BETWEEN`.
+     */
+    _y_row_range_to_data(facet, row_range){
+        if(!Array.isArray(row_range) || row_range.length !== 2) return [];
+        const thresholds = this.y_axis_thresholds[facet];
+        if(!Array.isArray(thresholds) || thresholds.length === 0) return [];
+        const max_idx = thresholds.length - 1;
+        const clamp = (i) => Math.max(0, Math.min(max_idx, i));
+        // row_range[0] is the high row index, row_range[1] the low.
+        const low_idx  = clamp(Math.floor(row_range[1]));
+        const high_idx = clamp(Math.ceil(row_range[0]));
+        const lo = thresholds[low_idx];
+        const hi = thresholds[high_idx];
+        // Thresholds may be ascending or descending depending on axis
+        // orientation; normalize so the SQL gets [lo, hi].
+        return lo <= hi ? [lo, hi] : [hi, lo];
+    }
+
+    /**
+     * Legacy JS brush computation, retained for the no-comm path (tests,
+     * environments where the kernel isn't yet attached). Reads bin.indices
+     * populated by calculate_box_metrics.
+     */
+    _compute_brushed_data_js(facet){
+        const chunks = [];
+
+        if(this.brushed_ranges[facet].x_range.length != 0){
+            for(let bin of this.faceted_bins[facet].column){
+                let test_threshold = bin.threshold;
+                if(this.scale_types[facet].x.datetime){
+                    test_threshold = new Date(test_threshold);
+                }
+                if(test_threshold >= this.brushed_ranges[facet].x_range[0] &&
+                    test_threshold <= this.brushed_ranges[facet].x_range[1]){
+                        if (this.brushed_ranges[facet].y_range.length == 0){
+                            chunks.push(bin.indices);
+                        }
+                        else{
+                            for(let row in bin.bins){
+                                if(row >= this.brushed_ranges[facet].y_range[1] &&
+                                    row < this.brushed_ranges[facet].y_range[0]
+                                ){
+                                    chunks.push(bin.bins[row].indices);
+                                }
+                            }
+                        }
+                    }
+            }
+        }
+        else if(this.brushed_ranges[facet].y_range.length != 0){
+            for(let bin of this.faceted_bins[facet].column){
+                for(let row in bin.bins){
+                    if(row >= this.brushed_ranges[facet].y_range[1] &&
+                        row < this.brushed_ranges[facet].y_range[0]
+                    ){
+                        chunks.push(bin.bins[row].indices);
+                    }
+                }
+            }
+        }
+
+        let total = 0;
+        for(const c of chunks) total += c.length;
+        const flat = new Int32Array(total);
+        let off = 0;
+        for(const c of chunks){
+            flat.set(c, off);
+            off += c.length;
+        }
+        this.brushed_data[facet] = flat;
+    }
+
+    /**
      * Updates the data for the model.
      * @param {Array} data - The new data to update.
      */
     update_data(data){
-        this.list_major_data = this.list_major(data);
+        this.list_major_data = this._to_records(data);
+        this._coerce_categorical_to_string(this.list_major_data, this.vars['categorical']);
         this.data = this.facet(this.list_major_data, this.vars['facet_by']);
         this.facets = Object.keys(this.data);
-        this.sanitize_and_intialize_data(this.data);
+        // Reset per-facet state for the new dataset.
+        this._original_column_values = {};
+        this.faceted_bins = {};
+        this.faceted_sum_stats = {};
+        this.scale_types = {};
+        this.x_axis_thresholds = {};
+        this.y_axis_thresholds = {};
+        this.row_major_counts = {};
+        this.total_row_major_counts = {};
+        this.categorical_bins = {};
+        this.brushed_ranges = {};
+        this.brushed_data = {};
+        this.faceted_states = {};
         for(let facet of this.facets){
-            this.faceted_states[facet].original_bins = JSON.stringify(this.faceted_bins[facet]);
+            this.brushed_ranges[facet] = { x_range: [], y_range: [] };
+            this.brushed_data[facet] = [];
+            this.faceted_states[facet] = { filter: [], pinned_category: {} };
         }
+        this.color_scale_range = [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];
+        this.sanitize_and_intialize_data(this.data);
     }
+
+    /**
+     * Incrementally apply a config change without rebuilding from scratch.
+     * Called from the change:_vis_configs handler instead of constructing a
+     * new JSModel — the prior behavior re-ran list_major + the full
+     * sanitize_and_intialize_data pipeline for every dropdown selection, which
+     * scales with N.
+     *
+     * Returns true if the render orchestration should proceed (always true
+     * today; reserved for future short-circuit cases).
+     * @param {Object} new_vars - The new config object from _vis_configs.
+     */
+    apply_config(new_vars){
+        // Diff against _applied_vars, not this.vars — see constructor comment.
+        const old_vars = this._applied_vars;
+        // Partial inputs are valid: missing keys carry over from old_vars,
+        // they are not treated as removals. Otherwise a caller passing a
+        // single-field patch (`{color_agg: 'max'}`) would trigger a full
+        // facet_by rebuild because facet_by appears "missing".
+        const changed = new Set();
+        for(const k of Object.keys(new_vars)){
+            if(new_vars[k] !== old_vars[k]) changed.add(k);
+        }
+
+        this.vars = Object.assign({}, old_vars, new_vars);
+        this._applied_vars = Object.assign({}, this.vars);
+
+        if(changed.size === 0) return true;
+
+        // facet_by changes the partitioning of the source data — no way to
+        // avoid re-faceting, but we can re-use the existing list_major_data
+        // (no decode/re-decode) and just reset derived per-facet state.
+        if(changed.has('facet_by')){
+            this.data = this.facet(this.list_major_data, this.vars['facet_by']);
+            this.facets = Object.keys(this.data);
+            this._original_column_values = {};
+            this.faceted_bins = {};
+            this.faceted_sum_stats = {};
+            this.scale_types = {};
+            this.x_axis_thresholds = {};
+            this.y_axis_thresholds = {};
+            this.row_major_counts = {};
+            this.total_row_major_counts = {};
+            this.categorical_bins = {};
+            this.brushed_ranges = {};
+            this.brushed_data = {};
+            this.faceted_states = {};
+            for(const facet of this.facets){
+                this.brushed_ranges[facet] = { x_range: [], y_range: [] };
+                this.brushed_data[facet] = [];
+                this.faceted_states[facet] = { filter: [], pinned_category: {} };
+            }
+            this.color_scale_range = [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];
+            this.sanitize_and_intialize_data(this.data);
+            return true;
+        }
+
+        const recompute_x_axis = changed.has('x');
+        const recompute_y_axis = changed.has('y');
+        const recompute_metrics = recompute_x_axis || recompute_y_axis ||
+                                  changed.has('color') || changed.has('color_agg');
+        const recompute_categorical = changed.has('categorical');
+
+        if(recompute_x_axis || recompute_y_axis){
+            this.color_scale_range = [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];
+            this.global_sum_stats = this._init_global_stats_accumulator();
+            for(const fac of this.facets){
+                this.scale_types[fac] = this._empty_scale_types();
+                this.faceted_bins[fac] = {};
+                this._coerce_facet_types(this.data, fac);
+                this._compute_facet_summary_stats(this.data, fac);
+                this._accumulate_global_stats(fac);
+                if(recompute_x_axis) this._build_axis(this.data, fac, 'x');
+                else {
+                    // y change alone: x bins haven't been invalidated, restore
+                    // the d3.bin row arrays we stashed previously so
+                    // _compute_column_count_stats reads from arrays not stats.
+                    this.faceted_bins[fac].column = this._original_column_values[fac].map(b => b);
+                }
+                this._build_axis(this.data, fac, 'y');
+                if(recompute_x_axis){
+                    this._original_column_values[fac] = this.faceted_bins[fac].column.map(b => b);
+                }
+                this._compute_column_count_stats(fac);
+                this.global_sum_stats.num_cols = Math.max(
+                    this.faceted_bins[fac].column.length,
+                    this.global_sum_stats.num_cols
+                );
+                this.calculate_box_metrics(fac, this.x_axis_thresholds[fac], this.y_axis_thresholds[fac]);
+                this.calc_row_major_counts(fac);
+            }
+        }
+        else if(recompute_metrics){
+            this.color_scale_range = [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];
+            for(const fac of this.facets){
+                this._compute_facet_summary_stats(this.data, fac);
+                // Rebuild the working `column` array of row-bins from the
+                // pristine snapshot so calculate_box_metrics has the right
+                // shape (its earlier pass overwrote each slot with a stats
+                // object).
+                this.faceted_bins[fac].column = this._original_column_values[fac].map(b => b);
+                this._compute_column_count_stats(fac);
+                this.calculate_box_metrics(fac, this.x_axis_thresholds[fac], this.y_axis_thresholds[fac]);
+                this.calc_row_major_counts(fac);
+            }
+        }
+
+        if(recompute_categorical){
+            // Coerce the new categorical column's values to strings before
+            // rebuilding the bar-chart bins; otherwise a numeric column
+            // selected as `categorical` would key the bar chart by number.
+            this._coerce_categorical_to_string(this.list_major_data, this.vars['categorical']);
+            for(const fac of this.facets){
+                this._build_categorical_bins(this.data, fac);
+            }
+        }
+
+        return true;
+    }
+
 
     /**
      * Adds a view to the model.
@@ -821,7 +1483,7 @@ class JSModel{
             let bin_counts = new Array(new_bins[Object.keys(new_bins)[0]].length).fill(0);
             for(let column in new_bins){
                 for(let bin in new_bins[column]){
-                    bin_counts[bin] += new_bins[column][bin].values.length;
+                    bin_counts[bin] += new_bins[column][bin].count;
                 }
             }
             this.row_major_counts[facet] = bin_counts;

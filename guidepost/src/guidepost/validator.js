@@ -2,23 +2,24 @@
 
 class Validator{
 
-    constructor(svg, data={}, vis_configs={}){
+    constructor(svg, summary_stats={}, vis_configs={}){
         this.svg = svg;
-        this.data = data;
+        // The validator used to inspect column-major raw data directly. Now
+        // that `_vis_data` is an opaque Arrow bytes payload, this field holds
+        // the `_summary_stats` dict instead — same column-name keys, with
+        // per-column semantic_type/dtype/n_unique that's sufficient for every
+        // shape and type check below.
+        this.summary_stats = summary_stats;
         this.vis_configs = vis_configs;
-    
     }
 
     /**
-     * Ensures that all values in vis_configs are in the keys of data.
-     * @param {Object} vis_configs - The variable specifications.
-     * @param {Object} data - The data object.
-     * @returns {Array} - An array of missing keys and their associated values.
+     * Ensures every column referenced in vis_configs exists in the dataset.
      */
     validate_vis_configs() {
         let missing = [];
         for (let key in this.vis_configs) {
-            if (key !== 'color_agg' && !this.data.hasOwnProperty(this.vis_configs[key])) {
+            if (key !== 'color_agg' && !this.summary_stats.hasOwnProperty(this.vis_configs[key])) {
                 missing.push({ key: key, value: this.vis_configs[key], message: `Configuration Error: "${key}": The variable "${this.vis_configs[key]}" is missing from the data. Please verify that the variable name exists in the dataset columns or is spelled correctly.` });
             }
         }
@@ -28,8 +29,6 @@ class Validator{
 
     /**
      * Checks if a string is a valid date.
-     * @param {string} dateString - The string to check.
-     * @returns {boolean} - True if the string is a valid date, false otherwise.
      */
     isValidDate(dateString) {
         const date_time = new Date(dateString);
@@ -37,7 +36,7 @@ class Validator{
     }
 
     validate_data_loaded(){
-        if(Object.keys(this.data).length == 0){
+        if(Object.keys(this.summary_stats).length == 0){
             return [{key:'data', value:'data', message:"No data detected. Please load data into <objectname>.records"}];
         }
 
@@ -125,77 +124,56 @@ class Validator{
     }
 
 
-    // Function to coerce an entire column’s values to strings (preserving null/undefined)
-    coerceColumnToString(columnData) {
-        return Object.keys(columnData).reduce((result, key) => {
-            const v = columnData[key];
-            result[key] = (v == null) ? null : String(v);
-            return result;
-        }, {});
-    }
-
-    // Returns the first non-null value in a column dict, or undefined if all null.
-    firstNonNull(columnData) {
-        for (const k of Object.keys(columnData)) {
-            const v = columnData[k];
-            if (v != null) return v;
-        }
-        return undefined;
-    }
-
     /**
-     * Ensures that all values in this.vis_configs are logically appropriate
-     * @param {Object} this.vis_configs - The variable specifications.
-     * @param {Object} this.data - The data object.
-     * @returns {Array} - An array of missing keys and their associated values.
+     * Type-checks each configured column against its pandas-derived semantic
+     * type. summary_stats[col] carries semantic_type ∈ {continuous, ordinal,
+     * categorical} and dtype (e.g. 'datetime64[ns]') — sufficient to validate
+     * x/y/color/categorical without sampling raw values.
      */
     validate_variable_semantics() {
         let incorrect = [];
-        let valid_aggs = ['avg', 'variance', 'std', 'median', 'sum']
+        let valid_aggs = ['avg', 'variance', 'std', 'median', 'sum'];
+
+        const is_datetime = (col) => {
+            const dt = (this.summary_stats[col] && this.summary_stats[col].dtype) || '';
+            return dt.indexOf('datetime') !== -1;
+        };
+        // Datetime columns have semantic_type='continuous' in pandas, so the
+        // numeric check must also exclude datetimes — y and color refuse
+        // datetime columns, x accepts them via the separate is_datetime branch.
+        const is_numeric = (col) => {
+            const t = this.summary_stats[col] && this.summary_stats[col].semantic_type;
+            if(t !== 'continuous' && t !== 'ordinal') return false;
+            return !is_datetime(col);
+        };
 
         for (let key in this.vis_configs) {
+            const col = this.vis_configs[key];
             if(key === 'color_agg'){
                 if(!valid_aggs.includes(this.vis_configs['color_agg'])){
-                    incorrect.push({key:key, value: this.vis_configs[key], message: 'Invalid aggregation specified. Acceptable aggregations are: "avg", "variance", "std", "median", "sum"'});
+                    incorrect.push({key:key, value: col, message: 'Invalid aggregation specified. Acceptable aggregations are: "avg", "variance", "std", "median", "sum"'});
                 }
             }
             else if (key === 'x') {
-                let test_val = this.firstNonNull(this.data[this.vis_configs[key]]);
-                if (typeof test_val !== 'number'){
-                    if(typeof test_val == 'string'){
-                        if(!this.isValidDate(test_val)){
-                            incorrect.push({ key: key, value: this.vis_configs[key], message: 'The x-axis only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
-                        }
-                    }
-                    else {
-                        incorrect.push({ key: key, value: this.vis_configs[key], message: 'The x-axis only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
-                    }
+                if(!is_numeric(col) && !is_datetime(col)){
+                    incorrect.push({ key: key, value: col, message: 'The x-axis only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
                 }
             }
             else if (key === 'y') {
-                let test_val = this.firstNonNull(this.data[this.vis_configs[key]]);
-                if (typeof test_val !== 'number'){
-                        incorrect.push({ key: key, value: this.vis_configs[key], message: 'The y-axis only supports floats and integers. Please specify a different variable.' });
+                if(!is_numeric(col)){
+                    incorrect.push({ key: key, value: col, message: 'The y-axis only supports floats and integers. Please specify a different variable.' });
                 }
             }
             else if (key === 'color') {
-                let test_val = this.firstNonNull(this.data[this.vis_configs[key]]);
-                if (typeof test_val !== 'number'){
-                    incorrect.push({ key: key, value: this.vis_configs[key], message: 'The color variable only supports floats and integers. Please specify a different column on your dataset or verify the datatype of this column.' });
+                if(!is_numeric(col)){
+                    incorrect.push({ key: key, value: col, message: 'The color variable only supports floats and integers. Please specify a different column on your dataset or verify the datatype of this column.' });
                 }
             }
             else if (key === 'categorical'){
-                let test_val = this.firstNonNull(this.data[this.vis_configs[key]]);
-                // For categorical variables, coerce data to strings if necessary.
-                if(typeof test_val !== 'string'){
-                    // Coerce the column data at this.data[this.vis_configs[key]]
-                    this.data[this.vis_configs[key]] = this.coerceColumnToString(this.data[this.vis_configs[key]]);
-                    // Re-check the data type after coercion
-                    test_val = this.firstNonNull(this.data[this.vis_configs[key]]);
-                    if(test_val !== undefined && typeof test_val !== 'string'){
-                        incorrect.push({ key: key, value: this.vis_configs[key], message: 'The categorical view only supports categorical variables formatted as strings. Please specify a different column on your dataset or reformat an existing column.' });
-                    }
-                }
+                // Numeric columns selected as categorical are tolerated — the
+                // JSModel coerces values to strings during record decoding.
+                // Only reject if the column is missing entirely (caught by
+                // validate_vis_configs).
             }
         }
         return incorrect;

@@ -54,6 +54,27 @@ function buildModel(fixture = makeFixture(), vars = VARS){
     return new JSModel(fixture, vars, {}, makeAnywidgetStub());
 }
 
+/**
+ * Builds an Arrow IPC payload that mirrors what Python's pyarrow ships over
+ * the `_vis_data` Bytes trait. Used to exercise the production transport
+ * path end-to-end in the JS test suite.
+ */
+async function makeArrowPayload(fixture = makeFixture()){
+    const arrow = await import('apache-arrow');
+    const rows = Object.keys(fixture[Object.keys(fixture)[0]]).length;
+    const cols = {};
+    for(const name of Object.keys(fixture)){
+        const arr = new Array(rows);
+        for(let i = 0; i < rows; i++) arr[i] = fixture[name][i];
+        // tableFromArrays infers types per column; strings become Utf8,
+        // numbers become Float64 — both match what pyarrow produces from a
+        // pandas frame of equivalent shape.
+        cols[name] = arr;
+    }
+    const table = arrow.tableFromArrays(cols);
+    return arrow.tableToIPC(table, 'stream');
+}
+
 
 describe('JSModel — pure helpers', () => {
     let model;
@@ -323,10 +344,13 @@ describe('JSModel — constructor / sanitize pipeline', () => {
         }
     });
 
-    it('snapshots original_bins for each facet', () => {
+    it('captures pristine column-bin row arrays per facet', () => {
         for(const fac of model.facets){
-            assert.strictEqual(typeof model.faceted_states[fac].original_bins, 'string');
-            assert.ok(model.faceted_states[fac].original_bins.length > 0);
+            assert.ok(Array.isArray(model._original_column_values[fac]));
+            assert.strictEqual(
+                model._original_column_values[fac].length,
+                model.faceted_bins[fac].column.length
+            );
         }
     });
 });
@@ -371,7 +395,7 @@ describe('JSModel — interaction state', () => {
         it('clears brushed_data when no range is set', () => {
             model.add_view('v', { render(){} });
             model.update_subselected_data('A', ['v'], [], '', true);
-            assert.deepStrictEqual(model.brushed_data.A, []);
+            assert.strictEqual(model.brushed_data.A.length, 0);
         });
     });
 
@@ -421,6 +445,79 @@ describe('JSModel — interaction state', () => {
             const before = model.total_row_major_counts.A.slice();
             model.update_row_counts('src', 'v', 'A', {});
             assert.deepStrictEqual(model.row_major_counts.A, before);
+        });
+    });
+
+    describe('apply_config', () => {
+        it('mutates vars without re-running list_major', () => {
+            // Wrap list_major with a counting spy. apply_config must not touch
+            // it for non-facet_by changes — the whole point of the method.
+            const original = model.list_major.bind(model);
+            let calls = 0;
+            model.list_major = function(...args){ calls += 1; return original(...args); };
+            model.apply_config({ color_agg: 'median' });
+            assert.strictEqual(calls, 0);
+            assert.strictEqual(model.vars.color_agg, 'median');
+        });
+
+        it('color_agg change rebuilds box metrics with the new aggregator', () => {
+            // Before: avg. After: max. Cell aggregates should change.
+            const fac = model.facets[0];
+            const before = model.faceted_bins[fac].column.map(c => c.bins.map(b => b.avg));
+            model.apply_config({ color_agg: 'max' });
+            const after_max = model.faceted_bins[fac].column.map(c => c.bins.map(b => b.max));
+            // max >= avg at the cell level (for non-empty cells)
+            for(let i = 0; i < before.length; i++){
+                for(let j = 0; j < before[i].length; j++){
+                    if(model.faceted_bins[fac].column[i].bins[j].count > 0){
+                        assert.ok(after_max[i][j] >= before[i][j]);
+                    }
+                }
+            }
+        });
+
+        it('y change re-runs y axis thresholds', () => {
+            const fac = model.facets[0];
+            const before_thresholds = model.y_axis_thresholds[fac];
+            model.apply_config({ y: 'color' });
+            // Thresholds depend on the y variable's range; swapping y -> color
+            // (different range) must produce a different threshold array.
+            assert.notDeepStrictEqual(model.y_axis_thresholds[fac], before_thresholds);
+        });
+
+        it('no-op on identical config', () => {
+            const before = JSON.stringify(model.vars);
+            model.apply_config({ ...model.vars });
+            assert.strictEqual(JSON.stringify(model.vars), before);
+        });
+
+        it('accepts an Arrow IPC payload as the data argument (production path)', async () => {
+            const fixture = makeFixture(8);
+            const ipc = await makeArrowPayload(fixture);
+            const m = new JSModel(ipc, VARS, {}, makeAnywidgetStub());
+            // Same shape as the dict path: facets present, list_major_data full
+            assert.deepStrictEqual(m.facets.sort(), ['A','B']);
+            assert.strictEqual(m.list_major_data.length, 16);
+            // Round-tripped values preserved through Arrow
+            for(const r of m.list_major_data){
+                assert.ok(typeof r.x === 'number');
+                assert.ok(typeof r.cat === 'string');
+            }
+        });
+
+        it('still detects a change when this.vars has been mutated in place first', () => {
+            // ConfigurationInterface.createDropdown does:
+            //   let vis_configs = self.model.vars
+            //   vis_configs[config.name] = v
+            //   self.anywidget_model.set('_vis_configs', JSON.stringify(vis_configs))
+            // which leaves this.vars already equal to the "new" config by the
+            // time apply_config runs. Diff must be against _applied_vars, not
+            // this.vars — otherwise the visualizations never update.
+            const fac = model.facets[0];
+            const before_thresholds = model.y_axis_thresholds[fac];
+            model.vars.y = 'color';                     // mutate in place
+            model.apply_config({ ...model.vars });      // pass the mutated object
+            assert.notDeepStrictEqual(model.y_axis_thresholds[fac], before_thresholds);
         });
     });
 });
