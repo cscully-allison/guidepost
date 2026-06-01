@@ -146,6 +146,9 @@ class Validator{
             if(t !== 'continuous' && t !== 'ordinal') return false;
             return !is_datetime(col);
         };
+        const is_categorical = (col) => {
+            return !!(this.summary_stats[col] && this.summary_stats[col].semantic_type === 'categorical');
+        };
 
         for (let key in this.vis_configs) {
             const col = this.vis_configs[key];
@@ -155,8 +158,8 @@ class Validator{
                 }
             }
             else if (key === 'x') {
-                if(!is_numeric(col) && !is_datetime(col)){
-                    incorrect.push({ key: key, value: col, message: 'The x-axis only supports floats, integers and dates. Please specify a different variable or verify that the datetime is properly formatted.' });
+                if(!is_numeric(col) && !is_datetime(col) && !is_categorical(col)){
+                    incorrect.push({ key: key, value: col, message: 'The x-axis supports floats, integers, dates, and categorical columns. Please specify a different variable or verify that the datetime is properly formatted.' });
                 }
             }
             else if (key === 'y') {

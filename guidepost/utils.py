@@ -17,9 +17,10 @@ def convert_to_float(value):
     return float(value)
 
 
-def validate_and_clean_dataframe(in_cpy, supress_warnings=False):
+def validate_and_clean_dataframe(in_cpy, supress_warnings=False, list_columns=None):
     _warn_skips = (os.path.dirname('.'),)
     warn_supported_version = False
+    list_columns = set(list_columns or [])
 
     original_cols = in_cpy.columns
     o_df = in_cpy.dropna(axis=1, how='all')
@@ -61,9 +62,12 @@ def validate_and_clean_dataframe(in_cpy, supress_warnings=False):
                 print("Warning: The following columns were dropped because they contained 'timedelta' values which guidepost does not support:[{}]. Consider converting these to an interger representation.".format(rmvd_cols))
         original_cols = o_df.columns
     
-    #drop arrays/complex datatypes
+    #drop arrays/complex datatypes (but keep declared list columns, which are
+    # intentionally list-valued and parsed to Python lists upstream)
     col_diff = []
     for col in o_df.columns:
+        if col in list_columns:
+            continue
         if(type(o_df[col].iloc[0]) == type(np.ndarray([]))):
             col_diff.append(col)
             o_df = o_df.drop(col, axis=1)
@@ -90,8 +94,9 @@ def validate_and_clean_dataframe(in_cpy, supress_warnings=False):
 
     return o_df, report
 
-def extract_summary_statistics(o_df):
+def extract_summary_statistics(o_df, list_columns=None):
         summary = {}
+        list_columns = set(list_columns or [])
         type_counts = {"continuous": 0, "ordinal": 0, "categorical": 0}
 
         for col in o_df.columns:
@@ -99,6 +104,38 @@ def extract_summary_statistics(o_df):
             n_rows = len(s)
             n_missing = int(s.isna().sum())
             pct_missing = float(n_missing) / n_rows if n_rows > 0 else 0.0
+
+            # List columns hold unhashable lists, so nunique/value_counts must
+            # operate on the flattened (exploded) values, not the raw cells.
+            # They are always categorical and flagged is_list so the frontend
+            # can switch on explode/dedup behavior.
+            if col in list_columns:
+                exploded = s.dropna().explode()
+                vc = exploded.astype(object).value_counts(dropna=True)
+                top = vc.index[0] if len(vc) > 0 else None
+                top_freq = int(vc.iloc[0]) if len(vc) > 0 else 0
+                top_items = []
+                for k, v in vc.iloc[:10].items():
+                    try:
+                        key = k.item() if hasattr(k, "item") else k
+                    except Exception:
+                        key = str(k)
+                    top_items.append({"value": key, "count": int(v)})
+                summary[col] = {
+                    "dtype": str(s.dtype),
+                    "semantic_type": "categorical",
+                    "is_list": True,
+                    "n_rows": n_rows,
+                    "n_missing": n_missing,
+                    "pct_missing": pct_missing,
+                    "n_unique": int(exploded.nunique()),
+                    "top": top,
+                    "top_freq": top_freq,
+                    "top_values": top_items,
+                }
+                type_counts["categorical"] += 1
+                continue
+
             n_unique = int(s.nunique(dropna=True))
 
             # determine semantic type

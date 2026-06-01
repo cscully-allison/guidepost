@@ -69,6 +69,14 @@ export const num_cols = 150;
 
 export const MIN_BAR_WIDTH = 45;
 
+// Categorical x-axis layout. The rotated node labels and the per-node count
+// strip live in the vertical space freed by skipping the bottom histogram
+// (HISTOGRAM_LAYOUT.height) when x is categorical.
+export const MAX_NODE_LABEL_CHARS = 8;   // truncate long node names + ellipsis
+export const NODE_LABEL_BAND = 40;       // px reserved below the heatmap for rotated labels
+export const COUNT_STRIP_HEIGHT = 30;    // px height of the per-node distinct-count strip
+export const COUNT_STRIP_MARGIN = 6;     // gap between the label band and the count strip
+
 export const SHARED_X_SCALE = false
 
 // COLORS
@@ -97,11 +105,12 @@ export const VALID_CONFIG_FIELDS = [
                 'categorical'
             ],
             'options':[]},
-            {'name':'x', 
-             'human_readable': 'X Axis Variable', 
+            {'name':'x',
+             'human_readable': 'X Axis Variable',
              'valid_semantic_data_types':[
                 'continuous',
-                'ordinal'
+                'ordinal',
+                'categorical'
             ],
             'options':[]},
             {'name':'y', 

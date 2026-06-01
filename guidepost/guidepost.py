@@ -1,7 +1,9 @@
 import anywidget
 import traitlets
 import pandas as pd
+import numpy as np
 import pyarrow as pa
+import ast
 import json
 import os
 import sys
@@ -36,7 +38,13 @@ class Guidepost(anywidget.AnyWidget):
         # the setter below — otherwise `Guidepost(records=df)` looks like
         # it works but ships no data.
         records = kwargs.pop("records", None)
+        # Columns whose cells are lists of categorical values (one job → many
+        # nodes). Declared explicitly so we can parse stringified lists and
+        # mark them in _summary_stats; only list/categorical columns may sit
+        # on the x-axis. Pulled before super() for the same reason as records.
+        list_columns = kwargs.pop("list_columns", None)
         super().__init__(*args, **kwargs)
+        self._list_columns = list(list_columns) if list_columns else []
         # DuckDB-backed aggregator. Lazily created when the first DataFrame
         # is loaded — keeping it None until then so widgets constructed
         # without data don't pay the import/registration cost.
@@ -77,14 +85,18 @@ class Guidepost(anywidget.AnyWidget):
 
         in_cpy = in_df.copy()
         in_cpy.insert(0, 'gp_idx', range(0, len(in_cpy)))
+        # Normalize declared list columns to real Python lists (stringified
+        # lists are parsed) before validation/serialization so DuckDB, Arrow
+        # and the summary all see the same shape.
+        in_cpy = self._parse_list_columns(in_cpy)
         self.cached_records_df = in_cpy
 
         if sys.version_info.major < 3 or sys.version_info.minor < 12:
             warn_supported_version = False
 
-        o_df, report = validate_and_clean_dataframe(in_cpy, self.suppress_warnings)
+        o_df, report = validate_and_clean_dataframe(in_cpy, self.suppress_warnings, self._list_columns)
 
-        self._summary_stats = extract_summary_statistics(o_df)
+        self._summary_stats = extract_summary_statistics(o_df, self._list_columns)
 
         # Arrow preserves nulls natively, so the prior astype(object).where()
         # cast (which materialized a full object-dtype copy of o_df) is no
@@ -104,7 +116,43 @@ class Guidepost(anywidget.AnyWidget):
             self._agg_engine.replace(o_df)
 
         return self._vis_data
-        
+
+    def _parse_list_columns(self, df):
+        '''
+            Normalize each declared list column to a Python list per cell.
+            Accepts already-list cells, numpy arrays, and stringified lists
+            ("['a','b']"). Per-cell values are de-duplicated (order-preserving)
+            so a node repeated in one job can't double-count within a cell.
+            NaN cells are left as-is.
+        '''
+        for col in self._list_columns:
+            if col not in df.columns:
+                continue
+
+            def _norm(v):
+                if isinstance(v, (list, tuple, np.ndarray)):
+                    seq = list(v)
+                elif isinstance(v, str):
+                    try:
+                        parsed = ast.literal_eval(v)
+                        seq = list(parsed) if isinstance(parsed, (list, tuple)) else [parsed]
+                    except (ValueError, SyntaxError):
+                        seq = [v]
+                elif pd.isna(v):
+                    return v
+                else:
+                    seq = [v]
+                seen = set()
+                out = []
+                for item in seq:
+                    if item not in seen:
+                        seen.add(item)
+                        out.append(item)
+                return out
+
+            df[col] = df[col].map(_norm)
+        return df
+
     @property
     def selection(self):
         return self.retrieve_selected_data()

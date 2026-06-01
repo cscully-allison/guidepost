@@ -34,6 +34,10 @@ class JSModel{
         this.log_values_floor = 1;
         this.y_axis_thresholds = {};
         this.x_axis_thresholds = {};
+        // Per-facet ordered list of categorical x values (node/category names),
+        // matching faceted_bins[fac].column order. Interim order is distinct-
+        // count desc; the deferred seriation pass replaces this assignment.
+        this.col_order = {};
         this.scale_types = {};
 
         this.faceted_states = {};
@@ -99,6 +103,24 @@ class JSModel{
         return !!(this.anywidget_model
             && typeof this.anywidget_model.send === 'function'
             && typeof this.anywidget_model.on === 'function');
+    }
+
+    /**
+     * True when the current x variable is a categorical column (scalar OR
+     * list). Drives the scaleBand render path, rotated labels and count strip.
+     */
+    x_is_categorical(){
+        const s = this.feature_summary_stats && this.feature_summary_stats[this.vars.x];
+        return !!(s && s.semantic_type === 'categorical');
+    }
+
+    /**
+     * True when the current x variable is a list-valued column (one row → many
+     * values). Additionally triggers the explode + per-y-bin dedup behavior.
+     */
+    x_is_list(){
+        const s = this.feature_summary_stats && this.feature_summary_stats[this.vars.x];
+        return !!(s && s.is_list);
     }
 
     /**
@@ -362,6 +384,15 @@ class JSModel{
                     return new Date(Number(v));
                 }
                 return v;
+            };
+        }
+        if(field.type.typeId === Type.List || field.type.typeId === Type.LargeList){
+            // List columns surface as an Arrow sub-Vector per cell; materialize
+            // to a plain JS array so the categorical-x build can iterate it.
+            return (v) => {
+                if(v == null) return null;
+                if(Array.isArray(v)) return v;
+                return Array.from(v);
             };
         }
         return (v) => (typeof v === 'bigint' ? Number(v) : v);
@@ -822,7 +853,7 @@ class JSModel{
      */
     _empty_scale_types(){
         return {
-            x: { log: false, linear: false, datetime: false },
+            x: { log: false, linear: false, datetime: false, categorical: false },
             y: { log: false, linear: false, datetime: false }
         };
     }
@@ -833,6 +864,9 @@ class JSModel{
      * actually use a log scale.
      */
     _coerce_facet_types(data, fac){
+        // A categorical x (scalar string or list) must NOT be coerced to Date —
+        // node/category names are not parseable dates and would become NaN.
+        if(this.x_is_categorical()) return;
         let sample;
         for(const row of data[fac]){
             if(row[this.vars.x] != null){ sample = row[this.vars.x]; break; }
@@ -847,7 +881,10 @@ class JSModel{
      */
     _compute_facet_summary_stats(data, fac){
         this.faceted_sum_stats[fac] = {
-            x: this.get_summary_stats(data[fac], this.vars.x),
+            // Numeric min/max over a categorical/list x is meaningless (and the
+            // reduce would choke on array cells), so use empty stats — the
+            // categorical build derives its column order separately.
+            x: this.x_is_categorical() ? this._empty_summary_stats() : this.get_summary_stats(data[fac], this.vars.x),
             y: this.get_summary_stats(data[fac], this.vars.y),
             color: this.get_summary_stats(data[fac], this.vars.color)
         };
@@ -878,6 +915,11 @@ class JSModel{
         const var_name = this.vars[axis];
         const is_x = axis === 'x';
         const num_thresholds = is_x ? num_cols - 1 : num_rows;
+
+        if(is_x && this.x_is_categorical()){
+            this._build_categorical_x_column(data, fac);
+            return;
+        }
 
         if(is_x && stats.min instanceof Date){
             this.scale_types[fac].x.datetime = true;
@@ -931,6 +973,62 @@ class JSModel{
     }
 
     /**
+     * Builds the x-column structure for a categorical x axis. Produces the same
+     * shape the continuous path hands to calculate_box_metrics — an array of
+     * row arrays, one per column — so the existing snapshot / box-metrics /
+     * row-count machinery runs unchanged. x_axis_thresholds[fac] is set to the
+     * ordered category names; calculate_box_metrics copies each into the
+     * column's `.threshold` and sets `.count` to the column's distinct-job count.
+     *
+     * Scalar categorical: each row lands in exactly one column.
+     * List column: the row is exploded into every (deduped) value's column.
+     */
+    _build_categorical_x_column(data, fac){
+        this.scale_types[fac].x = { log: false, linear: false, datetime: false, categorical: true };
+
+        const x = this.vars.x;
+        const is_list = this.x_is_list();
+        const buckets = new Map();
+
+        const push = (key, row) => {
+            const k = String(key);
+            let arr = buckets.get(k);
+            if(!arr){ arr = []; buckets.set(k, arr); }
+            arr.push(row);
+        };
+
+        for(const row of data[fac]){
+            const v = row[x];
+            if(v == null) continue;
+            if(is_list){
+                const values = Array.isArray(v) ? v : [v];
+                // Dedupe within a row so one job can't double-count in a column.
+                const seen = new Set();
+                for(const item of values){
+                    if(item == null) continue;
+                    const k = String(item);
+                    if(seen.has(k)) continue;
+                    seen.add(k);
+                    push(k, row);
+                }
+            } else {
+                push(v, row);
+            }
+        }
+
+        // Interim ordering: distinct-job-count descending, name ascending for
+        // determinism. The deferred seriation pass replaces this single line.
+        const ordered = [...buckets.keys()].sort((a, b) => {
+            const d = buckets.get(b).length - buckets.get(a).length;
+            return d !== 0 ? d : (a < b ? -1 : a > b ? 1 : 0);
+        });
+
+        this.col_order[fac] = ordered;
+        this.x_axis_thresholds[fac] = ordered;
+        this.faceted_bins[fac].column = ordered.map(k => buckets.get(k));
+    }
+
+    /**
      * Thin wrapper around d3.bin so the three call sites in _build_axis read uniformly.
      */
     _bin_column(records, var_name, domain, thresholds){
@@ -978,8 +1076,31 @@ class JSModel{
      * @param {string} fac - The facet to calculate row major counts for.
      */
     calc_row_major_counts(fac){
-        let row_counts = Array(this.faceted_bins[fac].column[0].bins.length).fill(0);
-        for(let column of this.faceted_bins[fac].column){
+        const columns = this.faceted_bins[fac].column;
+        const n_rows = columns[0].bins.length;
+
+        if(this.x_is_list()){
+            // A job touching N nodes appears in N columns; a plain sum would
+            // count it N times. Dedupe per y-bin by unioning the per-cell
+            // gp_idx sets across columns, then take the cardinality.
+            const row_counts = new Array(n_rows);
+            for(let row = 0; row < n_rows; row++){
+                const seen = new Set();
+                for(const column of columns){
+                    const idx = column.bins[row].indices;
+                    for(let i = 0; i < idx.length; i++) seen.add(idx[i]);
+                }
+                row_counts[row] = seen.size;
+            }
+            this.row_major_counts[fac] = row_counts;
+            this.total_row_major_counts[fac] = row_counts;
+            return;
+        }
+
+        // Scalar categorical and continuous x: each row is in exactly one
+        // column, so summing cell counts per y-bin is already correct.
+        let row_counts = Array(n_rows).fill(0);
+        for(let column of columns){
             for(let row in column.bins){
                 row_counts[row] += column.bins[row].count;
             }
@@ -1023,7 +1144,10 @@ class JSModel{
         // error so behavior is preserved when the channel is unavailable
         // (e.g., test fixtures with no `send`/`on`).
         let used_python = false;
-        if(this._has_comm()){
+        // The DuckDB aggregation query bins x via threshold-CASE, which is
+        // meaningless for a categorical x. Recompute categorical-x grids in JS
+        // (calculate_box_metrics re-filters each column's rows by category).
+        if(this._has_comm() && !this.x_is_categorical()){
             try {
                 const reply = await this._send_request('request_aggregation', {
                     facet_by: this.vars.facet_by,
@@ -1131,8 +1255,12 @@ class JSModel{
                     // bin capture underflow rows (data points that JS's
                     // log-sanitize put into bin 0 but Python's SQL would
                     // otherwise exclude with `x >= threshold[0]`).
-                    const x_extended = this._extend_brush_range_edges(
-                        facet, 'x', this.brushed_ranges[facet].x_range);
+                    // A categorical x has no numeric x-range to brush; send an
+                    // empty x_range so the SQL falls back to y (+ category) only.
+                    const x_extended = this.x_is_categorical()
+                        ? []
+                        : this._extend_brush_range_edges(
+                            facet, 'x', this.brushed_ranges[facet].x_range);
                     const y_data = this._y_row_range_to_data(
                         facet, this.brushed_ranges[facet].y_range);
                     const y_extended = this._extend_brush_range_edges(
@@ -1307,7 +1435,14 @@ class JSModel{
             flat.set(c, off);
             off += c.length;
         }
-        this.brushed_data[facet] = flat;
+        // For a list x a job spans multiple columns, so the same gp_idx can be
+        // collected more than once; dedupe so the selection count is honest
+        // (the Python brush path already applies DISTINCT).
+        if(this.x_is_list() && flat.length > 0){
+            this.brushed_data[facet] = Int32Array.from(new Set(flat));
+        } else {
+            this.brushed_data[facet] = flat;
+        }
     }
 
     /**
@@ -1502,7 +1637,11 @@ class JSModel{
      * @param {string} token - The token for the view to render.
      */
     manage_render(token){
-        this.views[token].render();
+        // A view may be intentionally absent (e.g. the bottom histogram is not
+        // built when x is categorical), yet still appear in another view's
+        // render-target list. Skip silently rather than crashing.
+        const view = this.views[token];
+        if(view) view.render();
     }
 
     render_all(){

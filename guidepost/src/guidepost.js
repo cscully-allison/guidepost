@@ -79,19 +79,26 @@ export default async () => {
                 .attr('y', 0);
 
                     
-            let h_histogram = new Histogram(model, parent, model.facets[i], HISTOGRAM_LAYOUT.height, HISTOGRAM_LAYOUT.width, "bottom");
+            // The bottom histogram shows the x-distribution and owns the x-range
+            // brush — both meaningless for a categorical x. Skip it; its vertical
+            // space is reused by the heatmap's rotated labels + count strip.
+            let x_categorical = model.x_is_categorical();
+
+            let h_histogram = x_categorical
+                ? null
+                : new Histogram(model, parent, model.facets[i], HISTOGRAM_LAYOUT.height, HISTOGRAM_LAYOUT.width, "bottom");
             let v_histogram = new Histogram(model, parent, model.facets[i], VERT_HISTOGRAM_LAYOUT.height, VERT_HISTOGRAM_LAYOUT.width, "right");
             let cat_histogram = new CategoricalBarChart(model, parent, model.facets[i], CAT_HISTOGRAM_LAYOUT.height, CAT_HISTOGRAM_LAYOUT.width, "right");
             let heatmap = new Heatmap(model, parent, model.facets[i], OVERVIEW_LAYOUT.height, OVERVIEW_LAYOUT.width, num_rows);
             let legend = new Legend(model, parent, model.facets[i], heatmap.scale_color, LEGEND_LAYOUT.width, LEGEND_LAYOUT.height);
-                
+
             legend.inital_render();
-            h_histogram.render();
+            if(h_histogram) h_histogram.render();
             v_histogram.render();
             cat_histogram.render();
             heatmap.render();
 
-            model.add_view(h_histogram.id_token, h_histogram);
+            if(h_histogram) model.add_view(h_histogram.id_token, h_histogram);
             model.add_view(v_histogram.id_token, v_histogram);
             model.add_view(heatmap.id_token,heatmap);
             model.add_view(legend.id_token, legend);

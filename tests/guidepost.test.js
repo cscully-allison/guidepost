@@ -521,3 +521,87 @@ describe('JSModel — interaction state', () => {
         });
     });
 });
+
+
+describe('JSModel — categorical x axis', () => {
+    // ---- scalar categorical (e.g. "users") ----
+    function makeScalarCatFixture(){
+        return {
+            user:  {0:'alice',1:'alice',2:'bob',3:'carol',4:'bob',5:'alice'},
+            y:     {0:2,1:4,2:6,3:8,4:10,5:12},
+            color: {0:1,1:2,2:3,3:4,4:5,5:6},
+            cat:   {0:'red',1:'green',2:'blue',3:'red',4:'green',5:'blue'},
+            fac:   {0:'A',1:'A',2:'A',3:'A',4:'A',5:'A'},
+        };
+    }
+    const SCALAR_VARS = { facet_by:'fac', x:'user', y:'y', color:'color', color_agg:'avg', categorical:'cat' };
+    const SCALAR_SS = { user: { semantic_type:'categorical' } };
+
+    it('scalar: flags categorical, one column per value, ordered count-desc', () => {
+        const m = new JSModel(makeScalarCatFixture(), SCALAR_VARS, SCALAR_SS, makeAnywidgetStub());
+        assert.strictEqual(m.scale_types.A.x.categorical, true);
+        assert.strictEqual(m.x_is_categorical(), true);
+        assert.strictEqual(m.x_is_list(), false);
+        const cols = m.faceted_bins.A.column;
+        assert.strictEqual(cols.length, 3);
+        assert.deepStrictEqual(cols.map(c => c.threshold), ['alice','bob','carol']);
+        assert.deepStrictEqual(cols.map(c => c.count), [3,2,1]);
+        assert.ok(Array.isArray(cols[0].bins) && cols[0].bins.length > 0);
+    });
+
+    it('scalar: right histogram is a plain per-y-bin sum (no dedup)', () => {
+        const m = new JSModel(makeScalarCatFixture(), SCALAR_VARS, SCALAR_SS, makeAnywidgetStub());
+        const total = m.row_major_counts.A.reduce((a,b)=>a+b,0);
+        assert.strictEqual(total, 6); // 6 jobs, each in exactly one column
+    });
+
+    // ---- list-valued (e.g. "nodes") ----
+    function makeListFixture(){
+        return {
+            nodes: {0:['n1','n2'], 1:['n1','n2','n3'], 2:['n2'], 3:['n3']},
+            y:     {0:2,1:4,2:6,3:8},
+            color: {0:1,1:2,2:3,3:4},
+            cat:   {0:'red',1:'green',2:'blue',3:'red'},
+            fac:   {0:'A',1:'A',2:'A',3:'A'},
+        };
+    }
+    const LIST_VARS = { facet_by:'fac', x:'nodes', y:'y', color:'color', color_agg:'avg', categorical:'cat' };
+    const LIST_SS = { nodes: { semantic_type:'categorical', is_list:true } };
+
+    it('list: explodes into one column per distinct node, ordered count-desc', () => {
+        const m = new JSModel(makeListFixture(), LIST_VARS, LIST_SS, makeAnywidgetStub());
+        assert.strictEqual(m.scale_types.A.x.categorical, true);
+        assert.strictEqual(m.x_is_list(), true);
+        const cols = m.faceted_bins.A.column;
+        assert.strictEqual(cols.length, 3);
+        // n2 touches 3 jobs, n1 and n3 touch 2 each; ties broken name-asc
+        assert.deepStrictEqual(cols.map(c => c.threshold), ['n2','n1','n3']);
+        assert.deepStrictEqual(cols.map(c => c.count), [3,2,2]);
+        assert.strictEqual(cols.reduce((a,c)=>a+c.count,0), 7); // (job,node) pairs
+    });
+
+    it('list: right histogram dedupes multi-node jobs (double-count regression)', () => {
+        const m = new JSModel(makeListFixture(), LIST_VARS, LIST_SS, makeAnywidgetStub());
+        const deduped = m.row_major_counts.A.reduce((a,b)=>a+b,0);
+        const naive = m.faceted_bins.A.column.reduce((a,c)=>a+c.count,0);
+        assert.strictEqual(naive, 7);   // would-be count if we summed cells
+        assert.strictEqual(deduped, 4); // distinct jobs — each counted once
+    });
+
+    // A genuine pyarrow-produced List<Utf8> IPC stream (base64). The JS
+    // apache-arrow ListBuilder is broken in this env, so we exercise the
+    // decode path (the production concern) against real Arrow bytes rather
+    // than building the payload in JS. Columns: gp_idx, nodes, y, color, cat, fac.
+    const LIST_ARROW_B64 = '/////4gBAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAYAAAAgAQAAtAAAAIQAAABUAAAALAAAAAQAAAAI////AAABBRAAAAAUAAAABAAAAAAAAAADAAAAZmFjADD///8s////AAABBRAAAAAUAAAABAAAAAAAAAADAAAAY2F0AFT///9Q////AAABAxAAAAAYAAAABAAAAAAAAAAFAAAAY29sb3IAAADa////AAACAHz///8AAAEDEAAAABgAAAAEAAAAAAAAAAEAAAB5AAYACAAGAAYAAAAAAAIAqP///wAAAQwUAAAAHAAAAAQAAAABAAAAFAAAAAUAAABub2RlcwAAANj////U////AAABBRAAAAAcAAAABAAAAAAAAAAEAAAAaXRlbQAAAAAEAAQABAAAABAAFAAIAAYABwAMAAAAEAAQAAAAAAABAhAAAAAgAAAABAAAAAAAAAAGAAAAZ3BfaWR4AAAIAAwACAAHAAgAAAAAAAABQAAAAP/////YAQAAFAAAAAAAAAAMABYABgAFAAgADAAMAAAAAAMEABgAAADwAAAAAAAAAAAACgAYAAwABAAIAAoAAAAsAQAAEAAAAAQAAAAAAAAAAAAAABEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAACAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAABQAAAAAAAAAOAAAAAAAAAAAAAAAAAAAADgAAAAAAAAAIAAAAAAAAABYAAAAAAAAAA4AAAAAAAAAaAAAAAAAAAAAAAAAAAAAAGgAAAAAAAAAIAAAAAAAAACIAAAAAAAAAAAAAAAAAAAAiAAAAAAAAAAgAAAAAAAAAKgAAAAAAAAAAAAAAAAAAACoAAAAAAAAABQAAAAAAAAAwAAAAAAAAAAPAAAAAAAAANAAAAAAAAAAAAAAAAAAAADQAAAAAAAAABQAAAAAAAAA6AAAAAAAAAAEAAAAAAAAAAAAAAAHAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAHAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAACAAAAAAAAAAMAAAAAAAAAAAAAAAIAAAAFAAAABgAAAAcAAAAAAAAAAAAAAAIAAAAEAAAABgAAAAgAAAAKAAAADAAAAA4AAABuMW4ybjFuMm4zbjJuMwAAAAAAAAAAAEAAAAAAAAAQQAAAAAAAABhAAAAAAAAAIEAAAAAAAADwPwAAAAAAAABAAAAAAAAACEAAAAAAAAAQQAAAAAADAAAACAAAAAwAAAAPAAAAAAAAAHJlZGdyZWVuYmx1ZXJlZAAAAAAAAQAAAAIAAAADAAAABAAAAAAAAABBQUFBAAAAAP////8AAAAA';
+
+    it('list: decodes a List<Utf8> Arrow IPC payload (production transport)', () => {
+        const m = new JSModel(LIST_ARROW_B64, LIST_VARS, LIST_SS, makeAnywidgetStub());
+        const r0 = m.list_major_data.find(r => r.gp_idx === 0);
+        assert.ok(r0 && Array.isArray(r0.nodes), 'list cell decoded to a JS array');
+        assert.deepStrictEqual(r0.nodes, ['n1','n2']);
+        // same model shape as the dict path
+        assert.strictEqual(m.scale_types.A.x.categorical, true);
+        assert.strictEqual(m.faceted_bins.A.column.length, 3);
+        assert.strictEqual(m.row_major_counts.A.reduce((a,b)=>a+b,0), 4);
+    });
+});

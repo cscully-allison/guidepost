@@ -367,7 +367,10 @@ class AggregationEngine:
             clauses.append(f'"{category_col}" IN ({placeholders})')
             params.extend(category_filter)
         where = " AND ".join(clauses)
-        sql = f'SELECT "gp_idx" FROM df WHERE {where}'
+        # DISTINCT guards the forthcoming node-scoped selection path: once a
+        # list-valued (exploded) column drives the WHERE, a job touching N
+        # matching nodes would otherwise return its gp_idx N times.
+        sql = f'SELECT DISTINCT "gp_idx" FROM df WHERE {where}'
         arr = self._conn.execute(sql, params).fetchnumpy()
         # `fetchnumpy` returns a dict {col: ndarray}; pick the single column.
         indices = next(iter(arr.values())) if arr else np.empty(0, dtype=np.int64)

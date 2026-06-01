@@ -1,5 +1,5 @@
 import * as d3 from "https://esm.sh/d3@7";
-import { SHARED_X_SCALE, OVERVIEW_LAYOUT, num_rows, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, draw_width, MIN_BAR_WIDTH, draw_height, zoom_factor_h, zoom_factor_v } from "./consts";
+import { SHARED_X_SCALE, OVERVIEW_LAYOUT, num_rows, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, draw_width, MIN_BAR_WIDTH, draw_height, zoom_factor_h, zoom_factor_v, MAX_NODE_LABEL_CHARS, NODE_LABEL_BAND, COUNT_STRIP_HEIGHT, COUNT_STRIP_MARGIN, RICH_BLUE } from "./consts";
 import { SmartScale } from "./smartscale";
 
 class Heatmap{
@@ -32,17 +32,24 @@ class Heatmap{
     update_scales(){
         let sum_stats = this.model.faceted_sum_stats[this.facet];
 
-        // this.scale_x = d3.scaleBand()
-        //                             .domain(this.model.faceted_bins[this.facet].column.keys())
-        //                             .range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.width - OVERVIEW_LAYOUT.inner_padding]);
-        
-
-        if(SHARED_X_SCALE){
+        // Categorical x: a d3 band scale keyed by the column names (each column's
+        // `.threshold` holds its category/node name). x_is_band routes the
+        // positioning accessors below down the band path.
+        if(this.model.scale_types[this.facet].x.categorical){
+            this.x_is_band = true;
+            this.scale_x = d3.scaleBand()
+                .domain(this.model.faceted_bins[this.facet].column.map(c => c.threshold))
+                .range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.width - OVERVIEW_LAYOUT.inner_padding])
+                .padding(0.05);
+        }
+        else if(SHARED_X_SCALE){
+            this.x_is_band = false;
             this.scale_x = new SmartScale([this.model.global_sum_stats.x.min, this.model.global_sum_stats.x.max],
                         [OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.width-OVERVIEW_LAYOUT.inner_padding],
                         this.model);
         }
         else{
+            this.x_is_band = false;
             this.scale_x = new SmartScale([sum_stats.x.min, sum_stats.x.max],
                         [OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.width-OVERVIEW_LAYOUT.inner_padding],
                         this.model);
@@ -115,10 +122,30 @@ class Heatmap{
             .call(axis_left)   
             .attr('transform', `translate(${OVERVIEW_LAYOUT.inner_padding},${0})`);
 
-        view.append('g')
-            .attr('class', 'bottom-axis')
-            .call(d3.axisBottom().scale(this.scale_x.scale).ticks(this.scale_x.get_ticks())) 
-            .attr('transform', `translate(${0},${OVERVIEW_LAYOUT.height-OVERVIEW_LAYOUT.inner_padding})`)
+        if(this.x_is_band){
+            // Thin ticks so labels don't collide at high node cardinality, then
+            // rotate (≤45°) and truncate long names.
+            const domain = this.scale_x.domain();
+            const max_labels = 40;
+            const step = Math.max(1, Math.ceil(domain.length / max_labels));
+            const tick_vals = domain.filter((d, i) => i % step === 0);
+            view.append('g')
+                .attr('class', 'bottom-axis')
+                .call(d3.axisBottom(this.scale_x).tickValues(tick_vals))
+                .attr('transform', `translate(${0},${OVERVIEW_LAYOUT.height-OVERVIEW_LAYOUT.inner_padding})`)
+                .selectAll('text')
+                    .attr('text-anchor', 'start')
+                    .attr('transform', 'rotate(45)')
+                    .text(d => (typeof d === 'string' && d.length > MAX_NODE_LABEL_CHARS)
+                        ? d.slice(0, MAX_NODE_LABEL_CHARS) + '…'
+                        : d);
+        }
+        else{
+            view.append('g')
+                .attr('class', 'bottom-axis')
+                .call(d3.axisBottom().scale(this.scale_x.scale).ticks(this.scale_x.get_ticks()))
+                .attr('transform', `translate(${0},${OVERVIEW_LAYOUT.height-OVERVIEW_LAYOUT.inner_padding})`)
+        }
 
         
         view.append('text')
@@ -200,13 +227,7 @@ class Heatmap{
      */
     focus_col(update_element){
         let self = this;
-        let base_width;
-        if(SHARED_X_SCALE){
-            base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.global_sum_stats.num_cols))
-        }
-        else{
-            base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
-        }
+        let base_width = self.col_width();
        
         self.scale_y_blocks.range([OVERVIEW_LAYOUT.inner_padding-(zoom_factor_v/2), OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding + (zoom_factor_v/2)]);
 
@@ -224,10 +245,7 @@ class Heatmap{
             
     
         update_element.attr('transform', (d)=>{
-                if(typeof(d.threshold) === 'string'){
-                    return `translate(${self.scale_x.scale(new Date(d.threshold))}, ${OVERVIEW_LAYOUT.inner_padding})`
-                }
-                return `translate(${self.scale_x.scale(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`;
+                return `translate(${self.x_pos(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`;
             });
     }
 
@@ -236,13 +254,7 @@ class Heatmap{
      */
     unfocus_col(update_element){
         let self = this;
-        let base_width;
-        if(SHARED_X_SCALE){
-            base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.global_sum_stats.num_cols))
-        }
-        else{
-            base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
-        }
+        let base_width = self.col_width();
        
         self.scale_y_blocks.range([OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding]);
 
@@ -258,11 +270,8 @@ class Heatmap{
             .attr('height', (d)=>{return draw_height / self.model.faceted_bins[self.facet].column[0].bins.length})
             .attr('y', (d,i)=>{return self.scale_y_blocks(i) - OVERVIEW_LAYOUT.inner_padding});
 
-        update_element.attr('transform', (d)=>{       
-                if(typeof(d.threshold) === "string"){
-                    return `translate(${self.scale_x.scale(new Date(d.threshold))}, ${OVERVIEW_LAYOUT.inner_padding})`
-                }
-                return `translate(${self.scale_x.scale(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`
+        update_element.attr('transform', (d)=>{
+                return `translate(${self.x_pos(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`
             });
     }
 
@@ -291,21 +300,57 @@ class Heatmap{
     }
 
     /**
+     * Left-edge x coordinate for a column, bridging the categorical (scaleBand,
+     * keyed by category name) and continuous (SmartScale, keyed by number/Date)
+     * paths. The continuous path preserves the prior string⇒Date assumption.
+     */
+    x_pos(threshold){
+        if(this.x_is_band){
+            return this.scale_x(threshold);
+        }
+        const t = (typeof threshold === 'string') ? new Date(threshold) : threshold;
+        return this.scale_x.scale(t);
+    }
+
+    /**
+     * Per-column width: scaleBand bandwidth for a categorical x, otherwise the
+     * capped even split the continuous path uses.
+     */
+    col_width(){
+        if(this.x_is_band){
+            return this.scale_x.bandwidth();
+        }
+        const denom = SHARED_X_SCALE
+            ? this.model.global_sum_stats.num_cols
+            : this.model.faceted_bins[this.facet].column.length;
+        return Math.min(MIN_BAR_WIDTH, (draw_width / denom));
+    }
+
+    /**
+     * Visible hover label for a column. Categorical shows the value name and its
+     * distinct-job count; continuous keeps the date / numeric-range formatting.
+     */
+    column_label(data){
+        if(this.x_is_band){
+            return `${this.model.vars.x}: ${data.threshold} (${data.count} jobs)`;
+        }
+        if(this.model.scale_types[this.facet].x.datetime){
+            return `${this.format_utc_date(new Date(data.threshold))} (Local: ${new Date(data.threshold).toLocaleDateString()})`;
+        }
+        const i = this.model.x_axis_thresholds[this.facet].indexOf(data.threshold);
+        return `Records for '${this.model.vars.x}' range: (${this.format_number_with_commas(Math.floor(data.threshold))} - ${this.format_number_with_commas(Math.floor(this.model.x_axis_thresholds[this.facet][i+1]))})`;
+    }
+
+    /**
      * Renders the heatmap by updating the DOM elements based on the current data.
      */
     render(){
         const self = this;
 
 
-        let base_width = 0;
-        if(SHARED_X_SCALE){
-            base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.global_sum_stats.num_cols))
-        }
-        else{
-            base_width = Math.min(MIN_BAR_WIDTH, (draw_width / self.model.faceted_bins[self.facet].column.length))
-        }
+        let base_width = self.col_width();
 
-        
+
 
         if(self.model.row_major_counts[self.facet].length < 2){
             this.view
@@ -324,10 +369,7 @@ class Heatmap{
                     let col = enter.append('g')
                         .attr('class', 'column')
                         .attr('transform', (d, i)=>{
-                            if(typeof(d.threshold) === 'string'){
-                                return `translate(${self.scale_x.scale(new Date(d.threshold))}, ${OVERVIEW_LAYOUT.inner_padding})`
-                            }
-                            return `translate(${self.scale_x.scale(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`
+                            return `translate(${self.x_pos(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`
                         });
 
 
@@ -342,7 +384,7 @@ class Heatmap{
                         .attr('class', 'text-field')
                         .attr('transform', `translate(${0}, ${-20})`)
                         .style('visibility', (d)=>{
-                            if(self.pinned_cols.includes(String(new Date(d.threshold)))){
+                            if(self.pinned_cols.includes(String(d.threshold))){
                                 return 'visible';
                             }
                             return 'hidden';
@@ -356,15 +398,7 @@ class Heatmap{
                         
                     date.append('text')
                         .attr('fill', 'black')
-                        .text((data)=>{
-                            if(self.model.scale_types[self.facet].x.datetime){
-                                return `${self.format_utc_date(new Date(data.threshold))} (Local: ${new Date(data.threshold).toLocaleDateString()})`;
-                            }
-                            else{
-                                let current_threshold_index = self.model.x_axis_thresholds[self.facet].indexOf(data.threshold);
-                                return `Records for '${self.model.vars.x}' range: (${self.format_number_with_commas(Math.floor(data.threshold))} - ${self.format_number_with_commas(Math.floor(self.model.x_axis_thresholds[self.facet][current_threshold_index+1]))})`;
-                            }
-                        })
+                        .text((data)=> self.column_label(data))
                         .attr('text-anchor', 'middle');
 
                     col.each(
@@ -396,15 +430,7 @@ class Heatmap{
                             let dt_text_selection = d3.select(e.target).select('.text-field');
                             dt_text_selection.style('visibility', 'visible')
                                 .select('text')
-                                .text((data)=>{
-                                    if(self.model.scale_types[self.facet].x.datetime){
-                                        return `${self.format_utc_date(new Date(data.threshold))} (Local: ${new Date(data.threshold).toLocaleDateString()})`;
-                                    }
-                                    else{
-                                        let current_threshold_index = self.model.x_axis_thresholds[self.facet].indexOf(data.threshold);
-                                        return `Records for '${self.model.vars.x}' range: (${self.format_number_with_commas(Math.floor(data.threshold))} - ${self.format_number_with_commas(Math.floor(self.model.x_axis_thresholds[self.facet][current_threshold_index+1]))})`;
-                                    }
-                                });
+                                .text((data)=> self.column_label(data));
 
                             d3.select(e.target)
                                 .select('.text-bg')
@@ -419,7 +445,7 @@ class Heatmap{
                         self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, self.cached_bins);
                     })
                     .on('mouseleave', function(e,d){
-                        if(!Object.keys(self.cached_bins).includes(String(new Date(d.threshold)))){
+                        if(!Object.keys(self.cached_bins).includes(String(d.threshold))){
                             self.unfocus_col(d3.select(e.target));
                             d3.select(e.target)
                                 .select('.text-field')
@@ -449,10 +475,7 @@ class Heatmap{
                 },
                 function(update){
                     update.attr('transform', (d, i)=>{
-                            if(typeof(d.threshold) === 'string'){
-                                return `translate(${self.scale_x.scale(new Date(d.threshold))}, ${OVERVIEW_LAYOUT.inner_padding})`
-                            }
-                            return `translate(${self.scale_x.scale(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`
+                            return `translate(${self.x_pos(d.threshold)}, ${OVERVIEW_LAYOUT.inner_padding})`
                         });
 
                     update.select('.col-bg')
@@ -462,15 +485,13 @@ class Heatmap{
 
                     update.select('.text-field')
                             .style('visibility', (d)=>{
-                                if(self.pinned_cols.includes(String(new Date(d.threshold)))){
+                                if(self.pinned_cols.includes(String(d.threshold))){
                                     return 'visible';
                                 }
                                 return 'hidden';
                             })
                             .select('text')
-                            .text((d)=>{
-                                return `${new Date(d.threshold).toUTCString()} (${new Date(d.threshold).toLocaleDateString()})`;
-                            });
+                            .text((d)=> self.column_label(d));
 
                     //calling this as a .each so that we have access to
                     // column data for each row.
@@ -509,7 +530,39 @@ class Heatmap{
                 }
 
             );
+
+            if(self.x_is_band){
+                self.render_count_strip();
+            }
         }
+    }
+
+    /**
+     * Per-value count strip: one bar per column encoding that column's distinct-
+     * job count (col.count). Drawn only for a categorical (band) x, in its own
+     * <g> below the rotated labels — a sharedness strip stacks beneath it in a
+     * later phase.
+     */
+    render_count_strip(){
+        const self = this;
+        const columns = this.model.faceted_bins[this.facet].column;
+        const strip_top = OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding + NODE_LABEL_BAND;
+        const max_count = d3.max(columns, c => c.count) || 1;
+        const h_scale = d3.scaleLinear().domain([0, max_count]).range([0, COUNT_STRIP_HEIGHT]);
+
+        let strip = this.view.select('.count-strip');
+        if(strip.empty()){
+            strip = this.view.append('g').attr('class', 'count-strip');
+        }
+        strip.selectAll('.count-bar')
+            .data(columns)
+            .join('rect')
+                .attr('class', 'count-bar')
+                .attr('x', d => self.x_pos(d.threshold))
+                .attr('width', self.col_width())
+                .attr('y', d => strip_top + COUNT_STRIP_HEIGHT - h_scale(d.count))
+                .attr('height', d => h_scale(d.count))
+                .attr('fill', RICH_BLUE);
     }
 
 
