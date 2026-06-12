@@ -2,9 +2,11 @@ const assert = require('assert');
 
 // JSModel is an ES module that pulls in d3; load it dynamically once for the suite.
 let JSModel;
+let MAX_CATEGORICAL_COLUMNS;
 
 before(async () => {
     ({ JSModel } = await import('../guidepost/src/guidepost/js_model.js'));
+    ({ MAX_CATEGORICAL_COLUMNS } = await import('../guidepost/src/guidepost/consts.js'));
 });
 
 /**
@@ -555,6 +557,40 @@ describe('JSModel — categorical x axis', () => {
         assert.strictEqual(total, 6); // 6 jobs, each in exactly one column
     });
 
+    it('scalar: a y-axis change preserves the categorical x scale + column order', () => {
+        // Regression: apply_config reset scale_types via _empty_scale_types() on
+        // any y change, but only rebuilt the x scale-type when x itself changed.
+        // A y-only change therefore dropped x.categorical to false, knocking the
+        // heatmap off its scaleBand path so every column's x position became NaN.
+        const m = new JSModel(makeScalarCatFixture(), SCALAR_VARS, SCALAR_SS, makeAnywidgetStub());
+        m.apply_config({ ...m.vars, y: 'color' });
+        assert.strictEqual(m.scale_types.A.x.categorical, true);
+        assert.strictEqual(m.x_is_categorical(), true);
+        const cols = m.faceted_bins.A.column;
+        assert.deepStrictEqual(cols.map(c => c.threshold), ['alice','bob','carol']);
+        assert.deepStrictEqual(cols.map(c => c.count), [3,2,1]);
+    });
+
+    it('scalar: no overflow flag when category count is under the cap', () => {
+        const m = new JSModel(makeScalarCatFixture(), SCALAR_VARS, SCALAR_SS, makeAnywidgetStub());
+        assert.strictEqual(m.categorical_overflow.A, null);
+    });
+
+    it('scalar: caps columns at MAX_CATEGORICAL_COLUMNS and records the overflow', () => {
+        const N = MAX_CATEGORICAL_COLUMNS + 50;
+        const user = {}, y = {}, color = {}, cat = {}, fac = {};
+        for(let i = 0; i < N; i++){
+            user[i]  = 'u' + String(i).padStart(4, '0'); // distinct, alpha-deterministic
+            y[i]     = i % 10;
+            color[i] = i % 5;
+            cat[i]   = 'red';
+            fac[i]   = 'A';
+        }
+        const m = new JSModel({user, y, color, cat, fac}, SCALAR_VARS, SCALAR_SS, makeAnywidgetStub());
+        assert.strictEqual(m.faceted_bins.A.column.length, MAX_CATEGORICAL_COLUMNS);
+        assert.deepStrictEqual(m.categorical_overflow.A, { shown: MAX_CATEGORICAL_COLUMNS, total: N });
+    });
+
     // ---- list-valued (e.g. "nodes") ----
     function makeListFixture(){
         return {
@@ -586,6 +622,49 @@ describe('JSModel — categorical x axis', () => {
         const naive = m.faceted_bins.A.column.reduce((a,c)=>a+c.count,0);
         assert.strictEqual(naive, 7);   // would-be count if we summed cells
         assert.strictEqual(deduped, 4); // distinct jobs — each counted once
+    });
+
+    it('list: column order follows the shipped category_order (seriation)', () => {
+        const ss = { nodes: { semantic_type:'categorical', is_list:true, category_order:['n3','n1','n2'] } };
+        const m = new JSModel(makeListFixture(), LIST_VARS, ss, makeAnywidgetStub());
+        assert.deepStrictEqual(m.faceted_bins.A.column.map(c => c.threshold), ['n3','n1','n2']);
+    });
+
+    it('list: categories missing from category_order are appended in selection order', () => {
+        const ss = { nodes: { semantic_type:'categorical', is_list:true, category_order:['n3'] } };
+        const m = new JSModel(makeListFixture(), LIST_VARS, ss, makeAnywidgetStub());
+        // n3 first (in the order), then the rest by frequency-desc selection: n2, n1
+        assert.deepStrictEqual(m.faceted_bins.A.column.map(c => c.threshold), ['n3','n2','n1']);
+    });
+
+    it('list: selection ranks by category_score, overriding frequency order', () => {
+        const ss = { nodes: { semantic_type:'categorical', is_list:true,
+            category_score: { n1: 0.05, n2: 0.1, n3: 1.0 } } };
+        const m = new JSModel(makeListFixture(), LIST_VARS, ss, makeAnywidgetStub());
+        // score desc => n3, n2, n1 (frequency order would be n2, n1, n3)
+        assert.deepStrictEqual(m.faceted_bins.A.column.map(c => c.threshold), ['n3','n2','n1']);
+    });
+
+    it('list: a high-score rare node survives the cap over higher-frequency low-score nodes', () => {
+        const N = MAX_CATEGORICAL_COLUMNS;          // N f-nodes + 1 keep-node => over the cap
+        const nodes = {}, y = {}, color = {}, cat = {}, fac = {}, score = {};
+        let r = 0;
+        for(let i = 0; i < N; i++){
+            const name = 'f' + String(i).padStart(4, '0');
+            score[name] = 0.1;
+            for(let k = 0; k < 2; k++){              // frequency 2 each (beats keep's 1)
+                nodes[r] = [name]; y[r] = 1; color[r] = 1; cat[r] = 'red'; fac[r] = 'A'; r++;
+            }
+        }
+        score['keep'] = 1.0;
+        nodes[r] = ['keep']; y[r] = 1; color[r] = 1; cat[r] = 'red'; fac[r] = 'A'; r++;  // frequency 1
+        const ss = { nodes: { semantic_type:'categorical', is_list:true, category_score: score } };
+        const m = new JSModel({nodes, y, color, cat, fac}, LIST_VARS, ss, makeAnywidgetStub());
+
+        const shown = m.faceted_bins.A.column.map(c => c.threshold);
+        assert.strictEqual(shown.length, MAX_CATEGORICAL_COLUMNS);
+        assert.ok(shown.includes('keep'), 'high-score rare node kept despite low frequency');
+        assert.deepStrictEqual(m.categorical_overflow.A, { shown: MAX_CATEGORICAL_COLUMNS, total: N + 1 });
     });
 
     // A genuine pyarrow-produced List<Utf8> IPC stream (base64). The JS

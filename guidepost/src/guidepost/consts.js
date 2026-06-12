@@ -66,6 +66,12 @@ export const Y_VARIABLE_OFFSET = 0;
 
 export const num_rows = 50;
 export const num_cols = 150;
+export const MAX_CATEGORICAL_COLUMNS = 150;   // cap on columns for a categorical/list x; the rest of the (less-frequent) tail is dropped
+
+// Maximum number of facet panels rendered for a "Group By" column. When the
+// grouping column has more distinct values, only the MAX_FACETS largest groups
+// (by row count) are drawn; the remainder are summarized in an elision notice.
+export const MAX_FACETS = 30;
 
 export const MIN_BAR_WIDTH = 45;
 
@@ -75,7 +81,7 @@ export const MIN_BAR_WIDTH = 45;
 export const MAX_NODE_LABEL_CHARS = 8;   // truncate long node names + ellipsis
 export const NODE_LABEL_BAND = 40;       // px reserved below the heatmap for rotated labels
 export const COUNT_STRIP_HEIGHT = 30;    // px height of the per-node distinct-count strip
-export const COUNT_STRIP_MARGIN = 6;     // gap between the label band and the count strip
+export const COUNT_STRIP_MARGIN = 12;    // gap between the label band and the count strip
 
 export const SHARED_X_SCALE = false
 

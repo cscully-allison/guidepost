@@ -425,6 +425,12 @@ class Heatmap{
 
                         console.log("HOVERING OVER: ", d);
 
+                        // Lift the whole heatmap group above its siblings (the
+                        // legend is a later sibling and otherwise paints its
+                        // "Records Selected for Export" text over the hover
+                        // label's white background).
+                        self.view.raise();
+
                         self.focus_col(d3.select(e.target));
                         if(!Object.keys(self.cached_bins).includes(String(d.threshold))){
                             let dt_text_selection = d3.select(e.target).select('.text-field');
@@ -432,12 +438,8 @@ class Heatmap{
                                 .select('text')
                                 .text((data)=> self.column_label(data));
 
-                            d3.select(e.target)
-                                .select('.text-bg')
-                                .attr('width', ()=>{
-                                    return d3.select(e.target).select('.text-field').select('text').node().getBBox().width + 10;
-                                }).attr('transform', `translate(${-(d3.select(e.target).select('.text-field').select('text').node().getBBox().width/2)},${0})`)
-                            
+                            self._fit_text_bg(dt_text_selection);
+
                             self.cached_bins['hover'] = d.bins
                         }
 
@@ -533,8 +535,54 @@ class Heatmap{
 
             if(self.x_is_band){
                 self.render_count_strip();
+                self.render_overflow_note();
             }
         }
+    }
+
+    /**
+     * When a categorical/list x had more categories than the column cap, draws a
+     * note that the heatmap shows only the most frequent ones. Idempotent: the
+     * note is removed when this facet isn't capped.
+     */
+    render_overflow_note(){
+        const overflow = this.model.categorical_overflow[this.facet];
+        let note = this.view.select('.overflow-note');
+        if(!overflow){
+            note.remove();
+            return;
+        }
+        if(note.empty()){
+            note = this.view.append('text').attr('class', 'overflow-note');
+        }
+        // List x is selected by a frequency+association score; plain
+        // categoricals by frequency alone.
+        const basis = this.model.x_is_list() ? 'frequency & association' : 'frequency';
+        note
+            .text(`Showing top ${overflow.shown.toLocaleString()} of ${overflow.total.toLocaleString()} categories (by ${basis})`)
+            .attr('x', draw_width / 2)
+            .attr('y', OVERVIEW_LAYOUT.inner_padding - 4)
+            .attr('text-anchor', 'middle')
+            .style('font-size', '9pt')
+            .style('fill', '#a04040');
+    }
+
+    /**
+     * Sizes a column's white `.text-bg` rect to exactly cover its label text
+     * (plus a small margin) so the hover label stays readable over the heatmap
+     * cells behind it. `field` is the `.text-field` <g> selection.
+     */
+    _fit_text_bg(field){
+        const text = field.select('text').node();
+        if(!text) return;
+        const bb = text.getBBox();
+        const margin = 4;
+        field.select('.text-bg')
+            .attr('x', bb.x - margin)
+            .attr('y', bb.y - margin)
+            .attr('width', bb.width + 2 * margin)
+            .attr('height', bb.height + 2 * margin)
+            .attr('transform', null);
     }
 
     /**
@@ -546,7 +594,10 @@ class Heatmap{
     render_count_strip(){
         const self = this;
         const columns = this.model.faceted_bins[this.facet].column;
-        const strip_top = OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding + NODE_LABEL_BAND;
+        // COUNT_STRIP_MARGIN pushes the strip clear of the rotated label band
+        // so the bars don't crowd the bottom axis.
+        const strip_top = OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding + NODE_LABEL_BAND + COUNT_STRIP_MARGIN;
+        const strip_bottom = strip_top + COUNT_STRIP_HEIGHT;
         const max_count = d3.max(columns, c => c.count) || 1;
         const h_scale = d3.scaleLinear().domain([0, max_count]).range([0, COUNT_STRIP_HEIGHT]);
 
@@ -560,9 +611,44 @@ class Heatmap{
                 .attr('class', 'count-bar')
                 .attr('x', d => self.x_pos(d.threshold))
                 .attr('width', self.col_width())
-                .attr('y', d => strip_top + COUNT_STRIP_HEIGHT - h_scale(d.count))
+                .attr('y', d => strip_bottom - h_scale(d.count))
                 .attr('height', d => h_scale(d.count))
                 .attr('fill', RICH_BLUE);
+
+        // Left axis: lowest (0), midpoint, and highest distinct-job count.
+        // Counts are shortened (1-999, 1K-999K, 1M-999M, …) so the labels stay
+        // narrow and don't collide with the rotated strip label.
+        const short_count = (n) => {
+            n = Math.round(n);
+            const abs = Math.abs(n);
+            if(abs >= 1e9) return `${Math.round(n / 1e9)}B`;
+            if(abs >= 1e6) return `${Math.round(n / 1e6)}M`;
+            if(abs >= 1e3) return `${Math.round(n / 1e3)}K`;
+            return `${n}`;
+        };
+        // Dedupe so a tiny range (e.g. max_count of 1) doesn't stack two ticks at 0.
+        const tick_vals = [...new Set([0, Math.round(max_count / 2), max_count])];
+        const axis_scale = d3.scaleLinear().domain([0, max_count]).range([strip_bottom, strip_top]);
+        const count_axis = d3.axisLeft(axis_scale).tickValues(tick_vals).tickFormat(short_count);
+        let axis_g = this.view.select('.count-strip-axis');
+        if(axis_g.empty()){
+            axis_g = this.view.append('g').attr('class', 'count-strip-axis');
+        }
+        axis_g
+            .attr('transform', `translate(${OVERVIEW_LAYOUT.inner_padding},${0})`)
+            .call(count_axis);
+
+        // Rotated label for the strip, mirroring the y-axis label style. Sits
+        // left of the (now shortened) tick numbers so the two don't overlap.
+        let label = this.view.select('.count-strip-label');
+        if(label.empty()){
+            label = this.view.append('text').attr('class', 'count-strip-label');
+        }
+        label
+            .text('Distinct Jobs')
+            .attr('text-anchor', 'middle')
+            .style('font-size', '9pt')
+            .attr('transform', `translate(${OVERVIEW_LAYOUT.inner_padding - 50},${(strip_top + strip_bottom) / 2}) rotate(270)`);
     }
 
 

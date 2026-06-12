@@ -116,6 +116,27 @@ export default async () => {
         }
 
 
+        // When the grouping column has more distinct values than MAX_FACETS, the
+        // JSModel renders only the largest groups. Surface the remainder as a
+        // notice below the last panel so the elision is explicit, not silent.
+        let elided_height = 0;
+        if(model.elided_facet_count > 0){
+            const msg_y = (FACET_LAYOUT.height * model.facets.length)
+                + VIS_HEADER_HEIGHT + FACET_LAYOUT.outer_margin + 24;
+            const n = model.elided_facet_count;
+            vis_group.append('text')
+                .attr('class', 'facet-elision-msg')
+                .text(`+ ${n} more group${n > 1 ? 's' : ''} not shown — `
+                    + `displaying the ${model.facets.length} largest of `
+                    + `${model.total_facet_count} groups in "${model.vars['facet_by']}". `
+                    + `Filter this column in your data to inspect the others.`)
+                .attr('transform', `translate(${OVERVIEW_LAYOUT.outer_margin},${msg_y})`)
+                .attr('font-size', '11pt')
+                .attr('fill', '#a04040');
+            elided_height = 40;
+        }
+
+
         // running_view_height = FACET_LAYOUT.height * num_facets. Total SVG must
         // also include the vis_group's own translate (CONFIGURATION_LAYOUT.height
         // + HEADER_HEIGHT), the in-group VIS_HEADER_HEIGHT, the leading
@@ -127,7 +148,8 @@ export default async () => {
                 + HEADER_HEIGHT
                 + VIS_HEADER_HEIGHT
                 + FACET_LAYOUT.outer_margin
-                + FACET_LAYOUT.bottom_padding,
+                + FACET_LAYOUT.bottom_padding
+                + elided_height,
             1787
         );
 

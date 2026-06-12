@@ -1,6 +1,6 @@
 import * as d3 from "d3";
 import { tableFromIPC, Type } from "apache-arrow";
-import { num_rows, num_cols, VALID_CONFIG_FIELDS } from "./consts.js";
+import { num_rows, num_cols, VALID_CONFIG_FIELDS, MAX_FACETS, MAX_CATEGORICAL_COLUMNS } from "./consts.js";
 
 const MISSING_LABEL = "(missing)";
 
@@ -15,7 +15,7 @@ class JSModel{
         // rows) the coercion must live on the data side.
         this._coerce_categorical_to_string(this.list_major_data, vars['categorical']);
         this.data = this.facet(this.list_major_data, vars['facet_by']);
-        this.facets = Object.keys(this.data);
+        this._compute_facets();
         this.vars = vars;
         // Snapshot of the vars currently reflected in faceted_bins / scales /
         // categorical_bins. apply_config diffs against this rather than
@@ -35,9 +35,14 @@ class JSModel{
         this.y_axis_thresholds = {};
         this.x_axis_thresholds = {};
         // Per-facet ordered list of categorical x values (node/category names),
-        // matching faceted_bins[fac].column order. Interim order is distinct-
-        // count desc; the deferred seriation pass replaces this assignment.
+        // matching faceted_bins[fac].column order. For a list x this is the
+        // Python seriation sequence (co-occurring nodes adjacent); otherwise
+        // selection/frequency order.
         this.col_order = {};
+        // Per-facet {shown, total} when a categorical x has more categories than
+        // MAX_CATEGORICAL_COLUMNS and the tail was dropped; null otherwise. The
+        // heatmap reads this to render a "showing top N of M" note.
+        this.categorical_overflow = {};
         this.scale_types = {};
 
         this.faceted_states = {};
@@ -452,6 +457,20 @@ class JSModel{
         // facets the data based on passed column
         var facets = Object.groupBy(data, function(e){return e[col]})
         return facets
+    }
+
+    // Orders facet keys by descending group size and caps the visible set at
+    // MAX_FACETS. Records the full count + elided count so the view layer can
+    // report how many groups were hidden. Sorting largest-first means the
+    // capped set keeps the most-populated (most informative) groups. Assumes
+    // this.data has already been (re)faceted by the caller.
+    _compute_facets(){
+        const all = Object.keys(this.data).sort(
+            (a, b) => this.data[b].length - this.data[a].length
+        );
+        this.total_facet_count = all.length;
+        this.facets = all.slice(0, MAX_FACETS);
+        this.elided_facet_count = this.total_facet_count - this.facets.length;
     }
 
     /**
@@ -1016,16 +1035,66 @@ class JSModel{
             }
         }
 
-        // Interim ordering: distinct-job-count descending, name ascending for
-        // determinism. The deferred seriation pass replaces this single line.
-        const ordered = [...buckets.keys()].sort((a, b) => {
-            const d = buckets.get(b).length - buckets.get(a).length;
-            return d !== 0 ? d : (a < b ? -1 : a > b ? 1 : 0);
+        // Selection metric: which categories earn a column. For a list x with a
+        // Python-computed category_score (frequency + peak association to a
+        // common node), select by that so a rare-but-strongly-coupled node is
+        // kept, not dropped for being infrequent. Otherwise rank by frequency.
+        const score_of = this._selection_score_fn(buckets);
+        const ranked = [...buckets.keys()].sort((a, b) => {
+            const ds = score_of(b) - score_of(a);
+            if(ds !== 0) return ds;
+            const df = buckets.get(b).length - buckets.get(a).length; // freq tiebreak
+            if(df !== 0) return df;
+            return a < b ? -1 : a > b ? 1 : 0;
         });
 
+        // Guard against high-cardinality columns (e.g. JOB_NAME) producing
+        // thousands of unreadable columns: keep the top MAX_CATEGORICAL_COLUMNS
+        // and drop the tail. Rows whose only x value is a dropped category fall
+        // out of x-binning, same as null-x rows.
+        const total = ranked.length;
+        const shown = total > MAX_CATEGORICAL_COLUMNS ? ranked.slice(0, MAX_CATEGORICAL_COLUMNS) : ranked;
+        this.categorical_overflow[fac] = total > MAX_CATEGORICAL_COLUMNS ? { shown: shown.length, total } : null;
+
+        // Order the kept set: by the Python seriation sequence for a list x
+        // (co-occurring nodes adjacent), else keep the selection order.
+        const ordered = this._seriated_order(shown);
         this.col_order[fac] = ordered;
         this.x_axis_thresholds[fac] = ordered;
         this.faceted_bins[fac].column = ordered.map(k => buckets.get(k));
+    }
+
+    /**
+     * Returns key -> selection score. For a list x with a Python-shipped
+     * category_score, uses it (frequency + association); otherwise ranks by the
+     * facet-local distinct-job count. `buckets` is the per-key row arrays map.
+     */
+    _selection_score_fn(buckets){
+        const stats = this.feature_summary_stats && this.feature_summary_stats[this.vars.x];
+        const cat_score = this.x_is_list() && stats ? stats.category_score : null;
+        if(cat_score){
+            return (key) => cat_score[key] != null ? cat_score[key] : 0;
+        }
+        return (key) => buckets.get(key).length;
+    }
+
+    /**
+     * Orders the kept category set by the Python seriation sequence (list x
+     * only), so co-occurring nodes sit adjacent. category_order is global, so
+     * filter it to this facet's keys; any keys absent from it are appended in
+     * their incoming (selection) order. Falls back to `shown` unchanged when no
+     * order is shipped or x isn't a list.
+     */
+    _seriated_order(shown){
+        if(!this.x_is_list()) return shown;
+        const stats = this.feature_summary_stats && this.feature_summary_stats[this.vars.x];
+        const order = stats && stats.category_order;
+        if(!order || !order.length) return shown;
+        const pos = new Map(order.map((k, i) => [String(k), i]));
+        const in_order = shown.filter(k => pos.has(String(k)))
+                              .sort((a, b) => pos.get(String(a)) - pos.get(String(b)));
+        const rest = shown.filter(k => !pos.has(String(k)));
+        return in_order.concat(rest);
     }
 
     /**
@@ -1453,7 +1522,7 @@ class JSModel{
         this.list_major_data = this._to_records(data);
         this._coerce_categorical_to_string(this.list_major_data, this.vars['categorical']);
         this.data = this.facet(this.list_major_data, this.vars['facet_by']);
-        this.facets = Object.keys(this.data);
+        this._compute_facets();
         // Reset per-facet state for the new dataset.
         this._original_column_values = {};
         this.faceted_bins = {};
@@ -1509,7 +1578,7 @@ class JSModel{
         // (no decode/re-decode) and just reset derived per-facet state.
         if(changed.has('facet_by')){
             this.data = this.facet(this.list_major_data, this.vars['facet_by']);
-            this.facets = Object.keys(this.data);
+            this._compute_facets();
             this._original_column_values = {};
             this.faceted_bins = {};
             this.faceted_sum_stats = {};
@@ -1542,7 +1611,15 @@ class JSModel{
             this.color_scale_range = [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];
             this.global_sum_stats = this._init_global_stats_accumulator();
             for(const fac of this.facets){
+                // _empty_scale_types() clears the x flags (categorical/datetime/
+                // log/linear), but _build_axis('x') — the only code that rebuilds
+                // them — runs solely when x changed. On a y-only change we must
+                // carry the existing x scale-type forward; otherwise a categorical
+                // x silently drops off its scaleBand path in the heatmap and every
+                // column's x position collapses to NaN.
+                const preserved_x = recompute_x_axis ? null : this.scale_types[fac].x;
                 this.scale_types[fac] = this._empty_scale_types();
+                if(preserved_x) this.scale_types[fac].x = preserved_x;
                 this.faceted_bins[fac] = {};
                 this._coerce_facet_types(this.data, fac);
                 this._compute_facet_summary_stats(this.data, fac);

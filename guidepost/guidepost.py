@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from .utils import validate_and_clean_dataframe, extract_summary_statistics
+from .seriation import compute_category_seriation
 from .aggregation import AggregationEngine
 
 class Guidepost(anywidget.AnyWidget):
@@ -43,8 +44,13 @@ class Guidepost(anywidget.AnyWidget):
         # mark them in _summary_stats; only list/categorical columns may sit
         # on the x-axis. Pulled before super() for the same reason as records.
         list_columns = kwargs.pop("list_columns", None)
+        # Separator used to split bare (non-literal) list cells, e.g. the
+        # comma-joined node strings in ALCF LOCATION data ("nodeA,nodeB").
+        # Defaults to "," but is configurable for space/semicolon formats.
+        list_delimiter = kwargs.pop("list_delimiter", None)
         super().__init__(*args, **kwargs)
         self._list_columns = list(list_columns) if list_columns else []
+        self._list_delimiter = list_delimiter or ","
         # DuckDB-backed aggregator. Lazily created when the first DataFrame
         # is loaded — keeping it None until then so widgets constructed
         # without data don't pay the import/registration cost.
@@ -96,7 +102,19 @@ class Guidepost(anywidget.AnyWidget):
 
         o_df, report = validate_and_clean_dataframe(in_cpy, self.suppress_warnings, self._list_columns)
 
-        self._summary_stats = extract_summary_statistics(o_df, self._list_columns)
+        summary_stats = extract_summary_statistics(o_df, self._list_columns)
+
+        # Seriation order + association-aware selection score for list columns,
+        # shipped on _summary_stats (same channel as is_list, so it survives
+        # config-UI rewrites). The frontend caps columns by `category_score` and
+        # orders the kept set by `category_order`.
+        seriation = compute_category_seriation(o_df, self._list_columns)
+        for col, info in seriation.items():
+            if col in summary_stats:
+                summary_stats[col]["category_order"] = info["order"]
+                summary_stats[col]["category_score"] = info["score"]
+
+        self._summary_stats = summary_stats
 
         # Arrow preserves nulls natively, so the prior astype(object).where()
         # cast (which materialized a full object-dtype copy of o_df) is no
@@ -137,7 +155,10 @@ class Guidepost(anywidget.AnyWidget):
                         parsed = ast.literal_eval(v)
                         seq = list(parsed) if isinstance(parsed, (list, tuple)) else [parsed]
                     except (ValueError, SyntaxError):
-                        seq = [v]
+                        # Not a Python literal — treat as a delimited string
+                        # (e.g. "nodeA,nodeB") and split into its members
+                        # rather than keeping the whole string as one value.
+                        seq = [s.strip() for s in v.split(self._list_delimiter) if s.strip()]
                 elif pd.isna(v):
                     return v
                 else:

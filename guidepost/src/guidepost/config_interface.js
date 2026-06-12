@@ -1,6 +1,17 @@
 import * as d3 from "https://esm.sh/d3@7";
 import { OVERVIEW_LAYOUT } from "./consts";
 
+// Render order + header labels for the classification groups in each dropdown.
+// Empty groups are omitted at render time.
+const GROUP_ORDER = [
+    {key: 'temporal',     label: 'Temporal'},
+    {key: 'quantitative', label: 'Quantitative'},
+    {key: 'ordinal',      label: 'Ordinal'},
+    {key: 'categorical',  label: 'Categorical'},
+    {key: 'list',         label: 'List'},
+];
+const GROUP_LABELS = Object.fromEntries(GROUP_ORDER.map(g => [g.key, g.label]));
+
 class ConfigurationInterface{
     constructor(model, jsmodel, parent){
         this.anywidget_model = model;
@@ -36,8 +47,40 @@ class ConfigurationInterface{
         return `${stats.n_missing.toLocaleString()} missing${pct}`;
     }
 
+    // Maps a column to its dropdown classification group key. Datetime and list
+    // flags override the raw semantic_type so temporal/list columns sort into
+    // their own groups rather than landing under "categorical".
+    _classify(col){
+        if(this.datetime_cols && this.datetime_cols.includes(col)) return 'temporal';
+        const stats = this.model.feature_summary_stats[col] || {};
+        if(stats.is_list) return 'list';
+        if(stats.semantic_type === 'continuous') return 'quantitative';
+        if(stats.semantic_type === 'ordinal') return 'ordinal';
+        return 'categorical';
+    }
+
+    _group_label(col){
+        return GROUP_LABELS[this._classify(col)] || '';
+    }
+
+    // Rewrites option text so only the selected row reads "Classification > name"
+    // (the collapsed <select> mirrors the selected option's text); every other
+    // row reverts to its bare label. Idempotent — safe to call on every change.
+    _apply_selected_prefix(selectEl, selectedValue){
+        if(!selectEl) return;
+        for(const opt of selectEl.querySelectorAll('option')){
+            const col = opt.value;
+            opt.textContent = (col === selectedValue)
+                ? `${this._group_label(col)} > ${this._option_label(col)}`
+                : this._option_label(col);
+        }
+    }
+
     createDropdown(config, onChangeCallback) {
         const self = this;
+        // color_agg's options are static aggregation names, not columns, so they
+        // aren't classifiable — render those flat without group headers.
+        const is_column_dropdown = config['name'] !== 'color_agg';
         const dropdownGroup = this.parent.append('g')
             .attr('class', 'dropdown-group')
             .attr('transform', `translate(${this.dropdown_cum_l_offset}, ${this.dropdown_cum_t_offset})`);
@@ -60,26 +103,48 @@ class ConfigurationInterface{
             .on('change', function () {
                 const selectedValue = d3.select(this).property('value');
                 missing_label.text(self._missing_text_for(selectedValue));
+                if(is_column_dropdown){
+                    self._apply_selected_prefix(this, selectedValue);
+                }
                 onChangeCallback(selectedValue);
             });
 
-        let options = dropdown.selectAll('option')
-            .data(config.options)
-            .enter()
-            .append('xhtml:option')
+        // .property('selected', ...) — the `selected` attribute is only honored
+        // at parse time, so attr() won't change the displayed value on a select
+        // that's already been created.
+        const mark_selected = (sel) => sel
             .attr('value', d => d)
             .text(d => self._option_label(d))
+            .property('selected', d => self.model.vars[config.name] == d);
 
-        options.each(function(d, i){
-            // Use .property('selected', ...) — the `selected` attribute is only
-            // honored at parse time, so attr() won't change the displayed value
-            // on a select that's already been created.
-            d3.select(this).property('selected', self.model.vars[config.name] == d);
-        });
+        if(is_column_dropdown){
+            // Bucket options by classification, then emit one <optgroup> per
+            // non-empty group in GROUP_ORDER. <optgroup> labels are inherently
+            // non-interactable, giving the requested group headers for free.
+            const by_group = {};
+            for(const col of config.options){
+                const key = self._classify(col);
+                (by_group[key] = by_group[key] || []).push(col);
+            }
+            for(const group of GROUP_ORDER){
+                const cols = by_group[group.key];
+                if(!cols || cols.length === 0) continue;
+                const optgroup = dropdown.append('xhtml:optgroup').attr('label', group.label);
+                mark_selected(optgroup.selectAll('option').data(cols).enter().append('xhtml:option'));
+            }
+        } else {
+            mark_selected(dropdown.selectAll('option').data(config.options).enter().append('xhtml:option'));
+        }
+
         // Belt-and-suspenders: also set the select's value directly so the
         // displayed option matches model.vars even if no option matched above.
         if(self.model.vars[config.name] != null){
             dropdown.property('value', self.model.vars[config.name]);
+        }
+
+        // Show the "Classification > name" prefix on the initially-selected row.
+        if(is_column_dropdown){
+            self._apply_selected_prefix(dropdown.node(), self.model.vars[config.name]);
         }
 
         // Size the bounding rect from the dropdown content only — measure before
@@ -143,6 +208,8 @@ class ConfigurationInterface{
             return checked > 0 && ok === checked;
         };
         const datetime_cols = Object.keys(sum_stats).filter(is_datetime_col);
+        // Stash for _classify / createDropdown so temporal columns group correctly.
+        this.datetime_cols = datetime_cols;
 
         for(let config of valid_configs){
             let potential_options = [];

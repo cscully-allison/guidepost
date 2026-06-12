@@ -2,12 +2,12 @@
   "devDependencies": {
     "@anywidget/types": "^0.2.0",
     "@types/d3": "^7.4.3",
+    "esbuild": "0.28.0",
     "mocha": "^11.7.1"
   },
   "dependencies": {
     "animejs": "^4.3.6",
     "apache-arrow": "^21.1.0",
-    "d3": "^7.9.0",
-    "esbuild": "^0.28.0"
+    "d3": "^7.9.0"
   }
 }
