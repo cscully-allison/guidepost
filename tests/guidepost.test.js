@@ -624,6 +624,58 @@ describe('JSModel — categorical x axis', () => {
         assert.strictEqual(deduped, 4); // distinct jobs — each counted once
     });
 
+    it('list: computes per-column shared_fraction (fraction of multi-node jobs)', () => {
+        const m = new JSModel(makeListFixture(), LIST_VARS, LIST_SS, makeAnywidgetStub());
+        const byNode = Object.fromEntries(m.faceted_bins.A.column.map(c => [c.threshold, c.shared_fraction]));
+        // jobs: [n1,n2],[n1,n2,n3],[n2],[n3]
+        assert.strictEqual(byNode['n1'], 1);          // both of n1's jobs are multi-node
+        assert.ok(Math.abs(byNode['n2'] - 2/3) < 1e-9); // 2 of n2's 3 jobs multi-node
+        assert.strictEqual(byNode['n3'], 0.5);        // 1 of n3's 2 jobs multi-node
+    });
+
+    it('scalar: columns carry no shared_fraction (not a list x)', () => {
+        const m = new JSModel(makeScalarCatFixture(), SCALAR_VARS, SCALAR_SS, makeAnywidgetStub());
+        assert.ok(m.faceted_bins.A.column.every(c => c.shared_fraction === undefined));
+    });
+
+    it('list: co_occurrence_for returns P(other | hovered)', () => {
+        const m = new JSModel(makeListFixture(), LIST_VARS, LIST_SS, makeAnywidgetStub());
+        const n1 = Object.fromEntries(m.co_occurrence_for('A', 'n1').map(d => [d.node, d.strength]));
+        assert.strictEqual(n1['n2'], 1);     // both of n1's records also use n2
+        assert.strictEqual(n1['n3'], 0.5);   // 1 of n1's 2 records uses n3
+        const n2 = Object.fromEntries(m.co_occurrence_for('A', 'n2').map(d => [d.node, d.strength]));
+        assert.ok(Math.abs(n2['n1'] - 2/3) < 1e-9);
+        assert.ok(Math.abs(n2['n3'] - 1/3) < 1e-9);
+    });
+
+    it('x_has_co_occurrence: true for a multi-node list, false otherwise (graceful empties)', () => {
+        const list = new JSModel(makeListFixture(), LIST_VARS, LIST_SS, makeAnywidgetStub());
+        assert.strictEqual(list.x_has_co_occurrence('A'), true);
+
+        const scalar = new JSModel(makeScalarCatFixture(), SCALAR_VARS, SCALAR_SS, makeAnywidgetStub());
+        assert.strictEqual(scalar.x_has_co_occurrence('A'), false);
+
+        // List column whose every record is single-valued → no co-occurrence.
+        const singles = { nodes:{0:['n1'],1:['n2'],2:['n1'],3:['n3']}, y:{0:1,1:2,2:3,3:4},
+            color:{0:1,1:2,2:3,3:4}, cat:{0:'red',1:'green',2:'blue',3:'red'}, fac:{0:'A',1:'A',2:'A',3:'A'} };
+        const ms = new JSModel(singles, LIST_VARS, LIST_SS, makeAnywidgetStub());
+        assert.strictEqual(ms.x_has_co_occurrence('A'), false);
+        assert.deepStrictEqual(ms.co_occurrence_for('A', 'n1'), []);   // no sharing
+        assert.deepStrictEqual(ms.co_occurrence_for('A', 'nope'), []); // unknown node
+    });
+
+    it('set_pinned_selection unions + dedups pinned columns gp_idx into selected_records', () => {
+        const idxFix = { gp_idx:{0:10,1:11,2:12,3:13}, nodes:{0:['n1','n2'],1:['n1','n2','n3'],2:['n2'],3:['n3']},
+            y:{0:2,1:4,2:6,3:8}, color:{0:1,1:2,2:3,3:4}, cat:{0:'red',1:'green',2:'blue',3:'red'}, fac:{0:'A',1:'A',2:'A',3:'A'} };
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(idxFix, LIST_VARS, LIST_SS, stub);
+        m.set_pinned_selection('A', ['n1', 'n2'], []);
+        // n1 → records 10,11 ; n2 → 10,11,12 ; deduped union = 10,11,12
+        const sel = JSON.parse(stub._state['selected_records']).sort((a, b) => a - b);
+        assert.deepStrictEqual(sel, [10, 11, 12]);
+        assert.deepStrictEqual([...m.brushed_data.A].sort((a, b) => a - b), [10, 11, 12]);
+    });
+
     it('list: column order follows the shipped category_order (seriation)', () => {
         const ss = { nodes: { semantic_type:'categorical', is_list:true, category_order:['n3','n1','n2'] } };
         const m = new JSModel(makeListFixture(), LIST_VARS, ss, makeAnywidgetStub());

@@ -82,8 +82,13 @@ export const MAX_NODE_LABEL_CHARS = 8;   // truncate long node names + ellipsis
 export const NODE_LABEL_BAND = 40;       // px reserved below the heatmap for rotated labels
 export const COUNT_STRIP_HEIGHT = 30;    // px height of the per-node distinct-count strip
 export const COUNT_STRIP_MARGIN = 12;    // gap between the label band and the count strip
+export const SHAREDNESS_STRIP_HEIGHT = 30; // px height of the per-node sharedness strip
+export const SHAREDNESS_STRIP_MARGIN = 12; // gap between the count strip and the sharedness strip
 
 export const SHARED_X_SCALE = false
+
+// Hover/pin co-occurrence ribbon (arcs + column highlight).
+export const RIBBON_COLOR = 'rgb(176, 64, 140)';
 
 // COLORS
 export const BLUE = 'rgba(32, 61, 192, 0.7)';

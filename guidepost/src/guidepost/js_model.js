@@ -43,6 +43,10 @@ class JSModel{
         // MAX_CATEGORICAL_COLUMNS and the tail was dropped; null otherwise. The
         // heatmap reads this to render a "showing top N of M" note.
         this.categorical_overflow = {};
+        // Per-facet: list x has ≥1 multi-valued record (co-occurrence exists).
+        this.faceted_has_sharing = {};
+        // Per-facet memo of co_occurrence_for results, reset on column rebuild.
+        this._co_occurrence_cache = {};
         this.scale_types = {};
 
         this.faceted_states = {};
@@ -776,6 +780,19 @@ class JSModel{
             // longer have to hand a row-array out the door.
             temp_box_stats.count = filtered_bin.length;
 
+            // For a list x, the fraction of this node's jobs that also ran on
+            // ≥1 other node (i.e. whose node list has length > 1). Computed here
+            // while the raw rows are in hand; the heatmap's sharedness strip
+            // reads it. Undefined for scalar/continuous x.
+            if(this.x_is_list()){
+                let shared = 0;
+                for(let i = 0; i < filtered_bin.length; i++){
+                    const v = filtered_bin[i][this.vars.x];
+                    if(Array.isArray(v) && v.length > 1) shared++;
+                }
+                temp_box_stats.shared_fraction = filtered_bin.length > 0 ? shared / filtered_bin.length : 0;
+            }
+
             const customBins = this.binValues(filtered_bin, y_axis_thresholds, d => d[this.vars.y]);
 
             // Process each bin's summary statistics and update color scale range
@@ -1008,6 +1025,10 @@ class JSModel{
         const x = this.vars.x;
         const is_list = this.x_is_list();
         const buckets = new Map();
+        // Tracks whether any record spans >1 value — the precondition for any
+        // co-occurrence (sharedness strip + hover ribbon). Stays false for a
+        // scalar categorical x and for a list x with only single-valued cells.
+        let any_multi = false;
 
         const push = (key, row) => {
             const k = String(key);
@@ -1030,6 +1051,7 @@ class JSModel{
                     seen.add(k);
                     push(k, row);
                 }
+                if(seen.size > 1) any_multi = true;
             } else {
                 push(v, row);
             }
@@ -1062,6 +1084,63 @@ class JSModel{
         this.col_order[fac] = ordered;
         this.x_axis_thresholds[fac] = ordered;
         this.faceted_bins[fac].column = ordered.map(k => buckets.get(k));
+
+        // Co-occurrence precondition + cache reset for this facet's new columns.
+        this.faceted_has_sharing[fac] = is_list && any_multi;
+        this._co_occurrence_cache[fac] = {};
+    }
+
+    /** True when a list x has ≥1 multi-valued record in this facet — the
+     *  precondition for the sharedness strip and the hover ribbon. */
+    x_has_co_occurrence(fac){
+        return !!(this.faceted_has_sharing && this.faceted_has_sharing[fac]);
+    }
+
+    /**
+     * Co-occurring nodes for a hovered node, as [{node, strength}] sorted desc,
+     * where strength = P(other | node) = fraction of `node`'s records that also
+     * used `other`. Restricted to nodes that are currently shown columns.
+     * Returns [] (never throws) for a non-list x, an unknown node, an empty
+     * column, or when there's no sharing. Memoized per facet.
+     */
+    co_occurrence_for(fac, node){
+        if(!this.x_has_co_occurrence(fac)) return [];
+        const cache = this._co_occurrence_cache[fac] || (this._co_occurrence_cache[fac] = {});
+        const key = String(node);
+        if(cache[key]) return cache[key];
+
+        const thresholds = this.x_axis_thresholds[fac] || [];
+        const shown = new Set(thresholds.map(String));
+        const bin = thresholds.indexOf(node);
+        const rows = bin >= 0 && this._original_column_values[fac]
+            ? this._original_column_values[fac][bin]
+            : null;
+        if(!rows || rows.length === 0){ cache[key] = []; return cache[key]; }
+
+        const x = this.vars.x;
+        const tally = new Map();
+        for(const row of rows){
+            const v = row[x];
+            if(!Array.isArray(v)) continue;
+            const seen = new Set();
+            for(const item of v){
+                if(item == null) continue;
+                const k = String(item);
+                if(k === key || seen.has(k)) continue;   // skip self + per-row dupes
+                seen.add(k);
+                if(!shown.has(k)) continue;              // only positionable columns
+                tally.set(k, (tally.get(k) || 0) + 1);
+            }
+        }
+
+        const total = rows.length;
+        const eps = 1e-9;
+        const result = [...tally.entries()]
+            .map(([n, c]) => ({ node: n, strength: c / total }))
+            .filter(d => d.strength > eps)
+            .sort((a, b) => b.strength - a.strength || (a.node < b.node ? -1 : 1));
+        cache[key] = result;
+        return result;
     }
 
     /**
@@ -1360,6 +1439,15 @@ class JSModel{
             }
         }
 
+        this._finalize_selection(targets, no_render);
+    }
+
+    /**
+     * Flattens brushed_data across all facets into the selected_records trait
+     * (the widget.selection round-trip) and re-renders the given targets.
+     * Shared by the brush path and the categorical pin path.
+     */
+    _finalize_selection(targets, no_render){
         let total_ids = 0;
         for(let fac of this.facets){
             const arr = this.brushed_data[fac];
@@ -1379,10 +1467,30 @@ class JSModel{
         this.anywidget_model.save_changes();
 
         if(!no_render){
-            for(let target of targets){
+            for(let target of (targets || [])){
                 this.manage_render(target);
             }
         }
+    }
+
+    /**
+     * Selection driven by pinned categorical columns (no x/y brush). Sets the
+     * facet's brushed_data to the DEDUPED union of the pinned columns' gp_idx
+     * (each column box-stat carries an `indices` Int32Array) and syncs
+     * selected_records + the given render targets.
+     */
+    set_pinned_selection(facet, pinned_nodes, targets){
+        const cols = this.faceted_bins[facet] ? this.faceted_bins[facet].column : [];
+        const wanted = new Set((pinned_nodes || []).map(String));
+        const ids = new Set();
+        for(const col of cols){
+            if(!wanted.has(String(col.threshold))) continue;
+            const idx = col.indices;
+            if(!idx) continue;
+            for(let i = 0; i < idx.length; i++) ids.add(idx[i]);
+        }
+        this.brushed_data[facet] = Int32Array.from(ids);
+        this._finalize_selection(targets || [], false);
     }
 
     /**

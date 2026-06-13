@@ -1,5 +1,5 @@
 import * as d3 from "https://esm.sh/d3@7";
-import { SHARED_X_SCALE, OVERVIEW_LAYOUT, num_rows, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, draw_width, MIN_BAR_WIDTH, draw_height, zoom_factor_h, zoom_factor_v, MAX_NODE_LABEL_CHARS, NODE_LABEL_BAND, COUNT_STRIP_HEIGHT, COUNT_STRIP_MARGIN, RICH_BLUE } from "./consts";
+import { SHARED_X_SCALE, OVERVIEW_LAYOUT, num_rows, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, draw_width, MIN_BAR_WIDTH, draw_height, zoom_factor_h, zoom_factor_v, MAX_NODE_LABEL_CHARS, NODE_LABEL_BAND, COUNT_STRIP_HEIGHT, COUNT_STRIP_MARGIN, SHAREDNESS_STRIP_HEIGHT, SHAREDNESS_STRIP_MARGIN, RICH_BLUE, RICH_TAN, RIBBON_COLOR } from "./consts";
 import { SmartScale } from "./smartscale";
 
 class Heatmap{
@@ -328,11 +328,11 @@ class Heatmap{
 
     /**
      * Visible hover label for a column. Categorical shows the value name and its
-     * distinct-job count; continuous keeps the date / numeric-range formatting.
+     * distinct-record count; continuous keeps the date / numeric-range formatting.
      */
     column_label(data){
         if(this.x_is_band){
-            return `${this.model.vars.x}: ${data.threshold} (${data.count} jobs)`;
+            return `${this.model.vars.x}: ${data.threshold} (${data.count} records)`;
         }
         if(this.model.scale_types[this.facet].x.datetime){
             return `${this.format_utc_date(new Date(data.threshold))} (Local: ${new Date(data.threshold).toLocaleDateString()})`;
@@ -443,7 +443,10 @@ class Heatmap{
                             self.cached_bins['hover'] = d.bins
                         }
 
-                        
+
+                        // Hover ribbon: the hovered node plus any pinned nodes.
+                        self.draw_ribbons([...new Set([String(d.threshold), ...self.pinned_cols])]);
+
                         self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, self.cached_bins);
                     })
                     .on('mouseleave', function(e,d){
@@ -453,27 +456,41 @@ class Heatmap{
                                 .select('.text-field')
                                 .style('visibility', 'hidden');
                         }
-            
+
                         delete self.cached_bins['hover'];
+                        // Drop the hover ribbon; pinned ribbons persist.
+                        self.draw_ribbons(self.pinned_cols);
                         self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, self.cached_bins);
                     })
-                    // CUTTING PIN FUNCTIONALITY FOR NOW! Its a QOL Improvement we don't need but may come back later.
-                    // .on('click', function(e, d){
-                    //     if(self.pinned_cols.includes(String(new Date(d.threshold)))){
-                    //         self.pinned_cols = self.pinned_cols.filter((item) => item !== d.threshold);
-                    //         delete self.cached_bins[d.threshold];
-                    //     }else{
-                    //         self.pinned_cols.push(String(new Date(d.threshold)));
-                    //         self.cached_bins[String(new Date(d.threshold))] = d.bins;
-                    //     }
+                    .on('click', function(e, d){
+                        // Pin/subselect works for any categorical x; only the
+                        // ribbon is list-specific (draw_ribbons no-ops without
+                        // co-occurrence). Continuous x uses brushing, not pins.
+                        if(!self.x_is_band) return;
+                        const key = String(d.threshold);
+                        const pinning = !self.pinned_cols.includes(key);
+                        if(pinning){
+                            self.pinned_cols.push(key);
+                            self.cached_bins[key] = d.bins;
+                        } else {
+                            self.pinned_cols = self.pinned_cols.filter(item => item !== key);
+                            delete self.cached_bins[key];
+                        }
 
-                    //     if (self.pinned_cols.length == 0){
-                    //         self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, {});
-                    //     } else {
-                    //         self.model.update_subselected_data(self.facet, [`${self.facet}_right_histogram`, `${self.facet}_bottom_histogram`, `${self.facet}_legend`], [], "");
-                    //     }
+                        // Persist (or clear) the clicked column's label to match.
+                        const tf = d3.select(e.target).select('.text-field')
+                            .style('visibility', pinning ? 'visible' : 'hidden');
+                        tf.select('text').text(self.column_label(d));
+                        self._fit_text_bg(tf);
 
-                    // })
+                        // Right histogram reflects pinned (+ hover) columns; the
+                        // selection + legend reflect the pinned node records.
+                        self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, self.cached_bins);
+                        self.model.set_pinned_selection(self.facet, self.pinned_cols, [`${self.facet}_legend`]);
+
+                        // Persistent ribbons for pinned nodes (+ still-hovered one).
+                        self.draw_ribbons([...new Set([key, ...self.pinned_cols])]);
+                    })
                 },
                 function(update){
                     update.attr('transform', (d, i)=>{
@@ -535,7 +552,10 @@ class Heatmap{
 
             if(self.x_is_band){
                 self.render_count_strip();
+                self.render_sharedness_strip();
                 self.render_overflow_note();
+                // Keep pinned ribbons in sync with the (re)rendered columns.
+                self.draw_ribbons(self.pinned_cols);
             }
         }
     }
@@ -645,10 +665,143 @@ class Heatmap{
             label = this.view.append('text').attr('class', 'count-strip-label');
         }
         label
-            .text('Distinct Jobs')
+            .text('Records')
             .attr('text-anchor', 'middle')
-            .style('font-size', '9pt')
+            .style('font-size', '8pt')
             .attr('transform', `translate(${OVERVIEW_LAYOUT.inner_padding - 50},${(strip_top + strip_bottom) / 2}) rotate(270)`);
+    }
+
+    /**
+     * Per-node sharedness strip: one bar per column encoding the fraction of
+     * that node's jobs that also ran on ≥1 other node (col.shared_fraction).
+     * Only meaningful for a list x — a scalar categorical job sits in exactly
+     * one column, so the strip (and its axis/label) are removed for those.
+     * Stacks beneath the count strip in its own <g>.
+     */
+    render_sharedness_strip(){
+        const self = this;
+        const classes = ['.sharedness-strip', '.sharedness-strip-axis', '.sharedness-strip-label'];
+        // Only meaningful when the list x actually has shared records; a scalar
+        // categorical or an all-single-valued list column shows no strip.
+        if(!this.model.x_has_co_occurrence(this.facet)){
+            classes.forEach(c => this.view.select(c).remove());
+            return;
+        }
+
+        const columns = this.model.faceted_bins[this.facet].column;
+        // Sits one margin below the count strip (which itself sits below the
+        // rotated label band).
+        const count_bottom = OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding
+            + NODE_LABEL_BAND + COUNT_STRIP_MARGIN + COUNT_STRIP_HEIGHT;
+        const strip_top = count_bottom + SHAREDNESS_STRIP_MARGIN;
+        const strip_bottom = strip_top + SHAREDNESS_STRIP_HEIGHT;
+        // Fraction domain is fixed [0,1] so heights are comparable across facets.
+        const h_scale = d3.scaleLinear().domain([0, 1]).range([0, SHAREDNESS_STRIP_HEIGHT]);
+
+        let strip = this.view.select('.sharedness-strip');
+        if(strip.empty()){
+            strip = this.view.append('g').attr('class', 'sharedness-strip');
+        }
+        strip.selectAll('.sharedness-bar')
+            .data(columns)
+            .join('rect')
+                .attr('class', 'sharedness-bar')
+                .attr('x', d => self.x_pos(d.threshold))
+                .attr('width', self.col_width())
+                .attr('y', d => strip_bottom - h_scale(d.shared_fraction || 0))
+                .attr('height', d => h_scale(d.shared_fraction || 0))
+                .attr('fill', RICH_TAN);
+
+        // Left axis: 0 / 50 / 100 %.
+        const axis_scale = d3.scaleLinear().domain([0, 1]).range([strip_bottom, strip_top]);
+        const shared_axis = d3.axisLeft(axis_scale).tickValues([0, 0.5, 1]).tickFormat(d3.format('.0%'));
+        let axis_g = this.view.select('.sharedness-strip-axis');
+        if(axis_g.empty()){
+            axis_g = this.view.append('g').attr('class', 'sharedness-strip-axis');
+        }
+        axis_g
+            .attr('transform', `translate(${OVERVIEW_LAYOUT.inner_padding},${0})`)
+            .call(shared_axis);
+
+        // Rotated label, matching the count strip's treatment.
+        let label = this.view.select('.sharedness-strip-label');
+        if(label.empty()){
+            label = this.view.append('text').attr('class', 'sharedness-strip-label');
+        }
+        label
+            .text('Shared')
+            .attr('text-anchor', 'middle')
+            .style('font-size', '8pt')
+            .attr('transform', `translate(${OVERVIEW_LAYOUT.inner_padding - 50},${(strip_top + strip_bottom) / 2}) rotate(270)`);
+    }
+
+    /**
+     * Co-occurrence ribbon: for each source node in `nodes`, draws an arc from
+     * that column to every co-occurring column (width/opacity ∝ strength) plus a
+     * translucent highlight over those columns and an outline on the source.
+     * Lives in a raised, pointer-events:none overlay so it never blocks hover.
+     * A no-op (cleared) when x has no co-occurrence or `nodes` is empty — so a
+     * scalar categorical / all-single-valued list x simply shows nothing.
+     */
+    draw_ribbons(nodes){
+        let ribbon = this.view.select('.ribbon');
+        if(ribbon.empty()){
+            ribbon = this.view.append('g').attr('class', 'ribbon').style('pointer-events', 'none');
+        }
+        ribbon.raise();
+        ribbon.selectAll('*').remove();
+
+        if(!this.x_is_band || !nodes || nodes.length === 0) return;
+
+        const baseline = OVERVIEW_LAYOUT.inner_padding;
+        const cell_h = OVERVIEW_LAYOUT.height - 2 * OVERVIEW_LAYOUT.inner_padding;
+        const max_apex = cell_h * 0.6;
+        const cw = this.col_width();
+        const center = (n) => this.x_pos(n) + cw / 2;
+
+        // The source-column outline is a hover/pin affordance drawn for ANY
+        // categorical x. Arcs + co-occurring-column highlights are added only
+        // when the (list) x actually has co-occurrence.
+        const has_co = this.model.x_has_co_occurrence(this.facet);
+        const hl = ribbon.append('g').attr('class', 'ribbon-highlights');
+        const arcs = ribbon.append('g').attr('class', 'ribbon-arcs');
+        const marked = new Set();
+
+        for(const src of nodes){
+            const hx = center(src);
+            if(!isFinite(hx)) continue;
+
+            // Always outline the hovered/pinned source column once.
+            if(!marked.has(String(src))){
+                marked.add(String(src));
+                hl.append('rect')
+                    .attr('x', this.x_pos(src)).attr('y', baseline)
+                    .attr('width', cw).attr('height', cell_h)
+                    .attr('fill', 'none').attr('stroke', RIBBON_COLOR).attr('stroke-width', 2);
+            }
+
+            if(!has_co) continue;
+            const co = this.model.co_occurrence_for(this.facet, src);
+            for(const { node: other, strength } of co){
+                const ox = center(other);
+                if(!isFinite(ox)) continue;
+                hl.append('rect')
+                    .attr('x', this.x_pos(other)).attr('y', baseline)
+                    .attr('width', cw).attr('height', cell_h)
+                    .attr('fill', RIBBON_COLOR).attr('opacity', 0.08 + 0.22 * strength);
+
+                const span = Math.abs(ox - hx);
+                const apex = Math.min(span * 0.5, max_apex);
+                const midx = (hx + ox) / 2;
+                arcs.append('path')
+                    .attr('d', `M${hx},${baseline} Q${midx},${baseline + apex} ${ox},${baseline}`)
+                    .attr('fill', 'none')
+                    .attr('stroke', RIBBON_COLOR)
+                    .attr('stroke-width', 1 + 3 * strength)
+                    .attr('stroke-linecap', 'round')
+                    .attr('opacity', 0.25 + 0.55 * strength);
+            }
+        }
     }
 
 
