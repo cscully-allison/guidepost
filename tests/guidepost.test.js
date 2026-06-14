@@ -676,6 +676,49 @@ describe('JSModel — categorical x axis', () => {
         assert.deepStrictEqual([...m.brushed_data.A].sort((a, b) => a - b), [10, 11, 12]);
     });
 
+    it('list: a facet whose x is entirely empty/null does not crash (empty columns)', () => {
+        // facet B's rows all have empty node lists → no columns for that facet.
+        const data = { nodes:{0:['a','b'],1:['a'],2:[],3:[]},
+            y:{0:1,1:2,2:3,3:4}, color:{0:1,1:2,2:3,3:4}, cat:{0:'r',1:'g',2:'r',3:'g'}, fac:{0:'A',1:'A',2:'B',3:'B'} };
+        const vars = { facet_by:'fac', x:'nodes', y:'y', color:'color', color_agg:'avg', categorical:'cat' };
+        const m = new JSModel(data, vars, LIST_SS, makeAnywidgetStub());
+        assert.strictEqual(m.faceted_bins.A.column.length > 0, true);   // A renders
+        assert.strictEqual(m.faceted_bins.B.column.length, 0);          // B has no columns
+        assert.deepStrictEqual([...m.row_major_counts.B], []);          // empty → views show "too few" message
+    });
+
+    it('set_pinned_cell_selection unions + dedups pinned cells gp_idx', () => {
+        const idxFix = { gp_idx:{0:10,1:11,2:12,3:13}, nodes:{0:['n1','n2'],1:['n1','n2','n3'],2:['n2'],3:['n3']},
+            y:{0:2,1:4,2:6,3:8}, color:{0:1,1:2,2:3,3:4}, cat:{0:'red',1:'green',2:'blue',3:'red'}, fac:{0:'A',1:'A',2:'A',3:'A'} };
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(idxFix, LIST_VARS, LIST_SS, stub);
+        const cols = m.faceted_bins.A.column;
+        const n1col = cols.find(c => c.threshold === 'n1');
+        const n2col = cols.find(c => c.threshold === 'n2');
+        // Pin every cell of n1 and n2 → union of their records, deduped.
+        const keys = [
+            ...n1col.bins.map((b, r) => `n1|${r}`),
+            ...n2col.bins.map((b, r) => `n2|${r}`),
+        ];
+        m.set_pinned_cell_selection('A', keys, []);
+        const sel = JSON.parse(stub._state['selected_records']).sort((a, b) => a - b);
+        assert.deepStrictEqual(sel, [10, 11, 12]);   // n1{10,11} ∪ n2{10,11,12}
+    });
+
+    it('set_interaction_mode switches mode and clears the active selection', () => {
+        const idxFix = { gp_idx:{0:10,1:11,2:12,3:13}, nodes:{0:['n1','n2'],1:['n1','n2','n3'],2:['n2'],3:['n3']},
+            y:{0:2,1:4,2:6,3:8}, color:{0:1,1:2,2:3,3:4}, cat:{0:'red',1:'green',2:'blue',3:'red'}, fac:{0:'A',1:'A',2:'A',3:'A'} };
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(idxFix, LIST_VARS, LIST_SS, stub);
+        assert.strictEqual(m.interaction_mode, 'column-pin');   // default
+        m.set_pinned_selection('A', ['n1'], []);
+        assert.ok(JSON.parse(stub._state['selected_records']).length > 0);
+        m.set_interaction_mode('cell-pin');
+        assert.strictEqual(m.interaction_mode, 'cell-pin');
+        assert.deepStrictEqual([...m.brushed_data.A], []);
+        assert.deepStrictEqual(JSON.parse(stub._state['selected_records']), []);
+    });
+
     it('list: column order follows the shipped category_order (seriation)', () => {
         const ss = { nodes: { semantic_type:'categorical', is_list:true, category_order:['n3','n1','n2'] } };
         const m = new JSModel(makeListFixture(), LIST_VARS, ss, makeAnywidgetStub());

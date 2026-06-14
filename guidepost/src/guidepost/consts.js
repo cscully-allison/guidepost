@@ -90,6 +90,10 @@ export const SHARED_X_SCALE = false
 // Hover/pin co-occurrence ribbon (arcs + column highlight).
 export const RIBBON_COLOR = 'rgb(176, 64, 140)';
 
+// Interaction-mode toggle icons (cell-pin / column-pin / 2D-brush).
+export const ICON_ACCENT = '#b8a9d9';   // light, low-saturation purple (active element)
+export const ICON_MUTED = '#cfcfcf';    // neutral grey (inactive elements)
+
 // COLORS
 export const BLUE = 'rgba(32, 61, 192, 0.7)';
 export const RICH_BLUE = 'rgb(32, 61, 192)';

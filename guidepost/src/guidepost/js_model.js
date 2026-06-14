@@ -47,6 +47,9 @@ class JSModel{
         this.faceted_has_sharing = {};
         // Per-facet memo of co_occurrence_for results, reset on column rebuild.
         this._co_occurrence_cache = {};
+        // Heatmap interaction mode: 'column-pin' | 'cell-pin' | '2d-brush'.
+        // Global (one mode across facets); works for every x-axis type.
+        this.interaction_mode = 'column-pin';
         this.scale_types = {};
 
         this.faceted_states = {};
@@ -1225,6 +1228,15 @@ class JSModel{
      */
     calc_row_major_counts(fac){
         const columns = this.faceted_bins[fac].column;
+        // A facet can have no columns when its x is categorical/list and every
+        // row's x value is null/empty (e.g. a list column that's empty for all
+        // rows in this facet). Emit empty counts so the views fall through to
+        // their "too few datapoints" guards instead of reading columns[0].
+        if(!columns || columns.length === 0){
+            this.row_major_counts[fac] = [];
+            this.total_row_major_counts[fac] = [];
+            return;
+        }
         const n_rows = columns[0].bins.length;
 
         if(this.x_is_list()){
@@ -1376,6 +1388,16 @@ class JSModel{
 
         }
 
+        await this._apply_brush_selection(facet, targets, no_render);
+    }
+
+    /**
+     * Recomputes brushed_data[facet] from the current brushed_ranges (x/y) —
+     * the Python brush query when available, else the JS fallback — then
+     * finalizes the selection. Shared by the histogram brushes and the
+     * continuous 2D box brush (which sets both ranges before calling this).
+     */
+    async _apply_brush_selection(facet, targets, no_render){
         const has_x_brush = this.brushed_ranges[facet].x_range.length === 2;
         const has_y_brush = this.brushed_ranges[facet].y_range.length === 2;
         const cat_filter = this.faceted_states[facet] && this.faceted_states[facet].filter;
@@ -1486,6 +1508,50 @@ class JSModel{
         for(const col of cols){
             if(!wanted.has(String(col.threshold))) continue;
             const idx = col.indices;
+            if(!idx) continue;
+            for(let i = 0; i < idx.length; i++) ids.add(idx[i]);
+        }
+        this.brushed_data[facet] = Int32Array.from(ids);
+        this._finalize_selection(targets || [], false);
+    }
+
+    /**
+     * Switches the heatmap interaction mode and clears any active selection so
+     * modes don't silently compound. Re-renders all views (each heatmap's
+     * apply_interaction_mode then reconciles its per-mode overlays/pins).
+     */
+    set_interaction_mode(mode){
+        if(this.interaction_mode === mode) return;
+        this.interaction_mode = mode;
+        for(const fac of this.facets){
+            this.brushed_data[fac] = new Int32Array(0);
+            if(this.brushed_ranges[fac]){
+                this.brushed_ranges[fac].x_range = [];
+                this.brushed_ranges[fac].y_range = [];
+            }
+        }
+        this._finalize_selection([], true);   // clear selected_records; render_all renders
+        this.render_all();
+    }
+
+    /**
+     * Selection driven by pinned cells (cell-pin mode) or a categorical box
+     * brush. cellKeys are "threshold|rowIndex" strings; sets brushed_data to the
+     * DEDUPED union of those cells' gp_idx (column.bins[row].indices) and syncs
+     * selected_records + targets. Works for any x type.
+     */
+    set_pinned_cell_selection(facet, cellKeys, targets){
+        const cols = this.faceted_bins[facet] ? this.faceted_bins[facet].column : [];
+        const by_threshold = new Map(cols.map(c => [String(c.threshold), c]));
+        const wanted = new Set(cellKeys || []);
+        const ids = new Set();
+        for(const k of wanted){
+            const sep = k.lastIndexOf('|');
+            if(sep < 0) continue;
+            const col = by_threshold.get(k.slice(0, sep));
+            const row = parseInt(k.slice(sep + 1), 10);
+            const cell = col && col.bins ? col.bins[row] : null;
+            const idx = cell && cell.indices;
             if(!idx) continue;
             for(let i = 0; i < idx.length; i++) ids.add(idx[i]);
         }

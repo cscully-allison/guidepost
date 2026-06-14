@@ -50,6 +50,10 @@ class Guidepost(anywidget.AnyWidget):
         list_delimiter = kwargs.pop("list_delimiter", None)
         super().__init__(*args, **kwargs)
         self._list_columns = list(list_columns) if list_columns else []
+        # Declared list columns plus any auto-detected array/list columns;
+        # recomputed each load_data. Initialized so methods that reference it
+        # before the first load don't fail.
+        self._effective_list_columns = list(self._list_columns)
         self._list_delimiter = list_delimiter or ","
         # DuckDB-backed aggregator. Lazily created when the first DataFrame
         # is loaded — keeping it None until then so widgets constructed
@@ -91,24 +95,31 @@ class Guidepost(anywidget.AnyWidget):
 
         in_cpy = in_df.copy()
         in_cpy.insert(0, 'gp_idx', range(0, len(in_cpy)))
-        # Normalize declared list columns to real Python lists (stringified
-        # lists are parsed) before validation/serialization so DuckDB, Arrow
-        # and the summary all see the same shape.
+        # Columns whose cells are genuine arrays/lists (e.g. parquet list
+        # columns) are auto-detected and treated as list columns — parsed and
+        # exploded like declared ones rather than dropped by the array guard.
+        # Declared columns (incl. delimited *string* lists, which can't be
+        # auto-detected) are unioned in.
+        self._effective_list_columns = sorted(
+            set(self._list_columns) | set(self._detect_list_columns(in_cpy)))
+        # Normalize list columns to real Python lists (stringified lists are
+        # parsed) before validation/serialization so DuckDB, Arrow and the
+        # summary all see the same shape.
         in_cpy = self._parse_list_columns(in_cpy)
         self.cached_records_df = in_cpy
 
         if sys.version_info.major < 3 or sys.version_info.minor < 12:
             warn_supported_version = False
 
-        o_df, report = validate_and_clean_dataframe(in_cpy, self.suppress_warnings, self._list_columns)
+        o_df, report = validate_and_clean_dataframe(in_cpy, self.suppress_warnings, self._effective_list_columns)
 
-        summary_stats = extract_summary_statistics(o_df, self._list_columns)
+        summary_stats = extract_summary_statistics(o_df, self._effective_list_columns)
 
         # Seriation order + association-aware selection score for list columns,
         # shipped on _summary_stats (same channel as is_list, so it survives
         # config-UI rewrites). The frontend caps columns by `category_score` and
         # orders the kept set by `category_order`.
-        seriation = compute_category_seriation(o_df, self._list_columns)
+        seriation = compute_category_seriation(o_df, self._effective_list_columns)
         for col, info in seriation.items():
             if col in summary_stats:
                 summary_stats[col]["category_order"] = info["order"]
@@ -135,15 +146,35 @@ class Guidepost(anywidget.AnyWidget):
 
         return self._vis_data
 
+    def _detect_list_columns(self, df):
+        '''
+            Auto-detect columns whose cells are genuine arrays/lists (the first
+            non-null value is a list/tuple/ndarray) — e.g. parquet list columns.
+            Returns the column names so they can be handled as list columns
+            instead of being dropped by the array guard. Delimited *string*
+            lists are NOT detected here (they look like plain strings); declare
+            those via `list_columns`.
+        '''
+        detected = []
+        for col in df.columns:
+            if col == 'gp_idx':
+                continue
+            idx = df[col].first_valid_index()
+            if idx is None:
+                continue
+            if isinstance(df[col].loc[idx], (list, tuple, np.ndarray)):
+                detected.append(col)
+        return detected
+
     def _parse_list_columns(self, df):
         '''
-            Normalize each declared list column to a Python list per cell.
-            Accepts already-list cells, numpy arrays, and stringified lists
-            ("['a','b']"). Per-cell values are de-duplicated (order-preserving)
-            so a node repeated in one job can't double-count within a cell.
-            NaN cells are left as-is.
+            Normalize each list column (declared or auto-detected) to a Python
+            list per cell. Accepts already-list cells, numpy arrays, and
+            stringified lists ("['a','b']"). Per-cell values are de-duplicated
+            (order-preserving) so a value repeated in one cell can't
+            double-count. NaN cells are left as-is.
         '''
-        for col in self._list_columns:
+        for col in self._effective_list_columns:
             if col not in df.columns:
                 continue
 

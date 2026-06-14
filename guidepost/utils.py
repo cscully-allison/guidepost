@@ -48,18 +48,20 @@ def validate_and_clean_dataframe(in_cpy, supress_warnings=False, list_columns=No
         if(not supress_warnings):
             print("Warning: The following columns contain null values which will be skipped per-axis at render time: {}".format(null_counts))
     
-    #drop columns which are timedelta type
-    o_df = o_df.select_dtypes(exclude=['timedelta64[ns]'])
-    col_diff = original_cols.difference(o_df.columns)
-    if(len(col_diff)>0):
-        rmvd_cols = ', '.join(col_diff)
-        report = {"timedelta_columns": col_diff}
-
+    #convert timedelta columns to numeric seconds (instead of dropping them) so
+    # they're usable as continuous variables downstream (binning, DuckDB, Arrow)
+    td_cols = list(o_df.select_dtypes(include=['timedelta']).columns)
+    if(len(td_cols) > 0):
+        for col in td_cols:
+            o_df[col] = o_df[col].dt.total_seconds()
+        report["timedelta_columns_converted"] = td_cols
         if(not supress_warnings):
+            conv_cols = ', '.join(td_cols)
+            msg = "Note: The following timedelta columns were converted to seconds: [{}]".format(conv_cols)
             if warn_supported_version:
-                warnings.warn("The following columns were dropped because they contained 'timedelta' values which guidepost does not support:[{}]. Consider converting these to an interger representation.".format(rmvd_cols), skip_file_prefixes=_warn_skips)
+                warnings.warn(msg, skip_file_prefixes=_warn_skips)
             else:
-                print("Warning: The following columns were dropped because they contained 'timedelta' values which guidepost does not support:[{}]. Consider converting these to an interger representation.".format(rmvd_cols))
+                print(msg)
         original_cols = o_df.columns
     
     #drop arrays/complex datatypes (but keep declared list columns, which are

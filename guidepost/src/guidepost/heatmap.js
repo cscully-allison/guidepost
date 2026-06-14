@@ -1,5 +1,5 @@
 import * as d3 from "https://esm.sh/d3@7";
-import { SHARED_X_SCALE, OVERVIEW_LAYOUT, num_rows, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, draw_width, MIN_BAR_WIDTH, draw_height, zoom_factor_h, zoom_factor_v, MAX_NODE_LABEL_CHARS, NODE_LABEL_BAND, COUNT_STRIP_HEIGHT, COUNT_STRIP_MARGIN, SHAREDNESS_STRIP_HEIGHT, SHAREDNESS_STRIP_MARGIN, RICH_BLUE, RICH_TAN, RIBBON_COLOR } from "./consts";
+import { SHARED_X_SCALE, OVERVIEW_LAYOUT, num_rows, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, draw_width, MIN_BAR_WIDTH, draw_height, zoom_factor_h, zoom_factor_v, MAX_NODE_LABEL_CHARS, NODE_LABEL_BAND, COUNT_STRIP_HEIGHT, COUNT_STRIP_MARGIN, SHAREDNESS_STRIP_HEIGHT, SHAREDNESS_STRIP_MARGIN, RICH_BLUE, RICH_TAN, RIBBON_COLOR, ICON_ACCENT, ICON_MUTED } from "./consts";
 import { SmartScale } from "./smartscale";
 
 class Heatmap{
@@ -13,7 +13,10 @@ class Heatmap{
         this.view = parent;
         this.num_rows = num_rows;
         this.id_token = `${facet}_heatmap`;
-        this.pinned_cols = [];
+        this.pinned_cols = [];          // column-pin mode: pinned column thresholds
+        this.pinned_cells = new Set();  // cell-pin mode: "threshold|row" keys
+        this.brushed_cells = null;      // 2D-brush (categorical): covered cell keys
+        this.cell_brush = null;         // d3.brush instance (2D-brush mode)
         this.cached_bins = {};
 
         this.scale_x = null;
@@ -182,6 +185,14 @@ class Heatmap{
 
     manage_highlight(col_data, row_num){
         const self = this;
+
+        // Cell membership highlight (cell-pin pins + categorical 2D-brush) —
+        // works for any x type, independent of the numeric brush ranges below.
+        const cell_key = `${col_data.threshold}|${row_num}`;
+        if((self.pinned_cells && self.pinned_cells.has(cell_key))
+            || (self.brushed_cells && self.brushed_cells.has(cell_key))){
+            return self.highlighted_scale_color(col_data.bins[row_num][self.model.vars.color_agg]);
+        }
 
         //fill row if only y axis is brushed
         if(self.model.brushed_ranges[self.facet].y_range.length != 0 
@@ -404,6 +415,7 @@ class Heatmap{
                     col.each(
                         function (column){
                             for(let row in column.bins){
+                                const row_idx = row;
                                 d3.select(this)
                                     .append('rect')
                                     .attr('class', 'row')
@@ -417,13 +429,19 @@ class Heatmap{
                                         }
                                         return self.scale_color(column.bins[row][self.model.vars.color_agg])
                                     })
+                                    // Cell-pin: toggle this (column, row) cell.
+                                    .on('click', function(e){
+                                        if(self.model.interaction_mode !== 'cell-pin') return;
+                                        self.toggle_pinned_cell(column.threshold, row_idx);
+                                    })
                             }
                         }
                     )
                     col.on('mouseenter', function (e, d){
+                        // 2D-brush mode covers the cells with a brush overlay; no
+                        // column hover there.
+                        if(self.model.interaction_mode === '2d-brush') return;
                         delete self.cached_bins['hover'];
-
-                        console.log("HOVERING OVER: ", d);
 
                         // Lift the whole heatmap group above its siblings (the
                         // legend is a later sibling and otherwise paints its
@@ -431,7 +449,11 @@ class Heatmap{
                         // label's white background).
                         self.view.raise();
 
-                        self.focus_col(d3.select(e.target));
+                        // Zoom only in column-pin so cells stay put for precise
+                        // clicking in cell-pin mode.
+                        if(self.model.interaction_mode === 'column-pin'){
+                            self.focus_col(d3.select(e.target));
+                        }
                         if(!Object.keys(self.cached_bins).includes(String(d.threshold))){
                             let dt_text_selection = d3.select(e.target).select('.text-field');
                             dt_text_selection.style('visibility', 'visible')
@@ -443,30 +465,34 @@ class Heatmap{
                             self.cached_bins['hover'] = d.bins
                         }
 
-
-                        // Hover ribbon: the hovered node plus any pinned nodes.
-                        self.draw_ribbons([...new Set([String(d.threshold), ...self.pinned_cols])]);
+                        // Hover ribbon (column-pin only): hovered + pinned columns.
+                        if(self.model.interaction_mode === 'column-pin'){
+                            self.draw_ribbons([...new Set([String(d.threshold), ...self.pinned_cols])]);
+                        }
 
                         self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, self.cached_bins);
                     })
                     .on('mouseleave', function(e,d){
+                        if(self.model.interaction_mode === '2d-brush') return;
                         if(!Object.keys(self.cached_bins).includes(String(d.threshold))){
-                            self.unfocus_col(d3.select(e.target));
+                            if(self.model.interaction_mode === 'column-pin'){
+                                self.unfocus_col(d3.select(e.target));
+                            }
                             d3.select(e.target)
                                 .select('.text-field')
                                 .style('visibility', 'hidden');
                         }
 
                         delete self.cached_bins['hover'];
-                        // Drop the hover ribbon; pinned ribbons persist.
-                        self.draw_ribbons(self.pinned_cols);
+                        // Drop the hover ribbon; pinned column ribbons persist.
+                        if(self.model.interaction_mode === 'column-pin'){
+                            self.draw_ribbons(self.pinned_cols);
+                        }
                         self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, self.cached_bins);
                     })
                     .on('click', function(e, d){
-                        // Pin/subselect works for any categorical x; only the
-                        // ribbon is list-specific (draw_ribbons no-ops without
-                        // co-occurrence). Continuous x uses brushing, not pins.
-                        if(!self.x_is_band) return;
+                        // Column-pin mode only; works for any x type.
+                        if(self.model.interaction_mode !== 'column-pin') return;
                         const key = String(d.threshold);
                         const pinning = !self.pinned_cols.includes(key);
                         if(pinning){
@@ -554,9 +580,10 @@ class Heatmap{
                 self.render_count_strip();
                 self.render_sharedness_strip();
                 self.render_overflow_note();
-                // Keep pinned ribbons in sync with the (re)rendered columns.
-                self.draw_ribbons(self.pinned_cols);
             }
+            // Interaction-mode toggle + per-mode overlays apply to every x type.
+            self.render_mode_buttons();
+            self.apply_interaction_mode();
         }
     }
 
@@ -751,17 +778,26 @@ class Heatmap{
         ribbon.raise();
         ribbon.selectAll('*').remove();
 
-        if(!this.x_is_band || !nodes || nodes.length === 0) return;
+        if(!nodes || nodes.length === 0) return;
 
         const baseline = OVERVIEW_LAYOUT.inner_padding;
         const cell_h = OVERVIEW_LAYOUT.height - 2 * OVERVIEW_LAYOUT.inner_padding;
         const max_apex = cell_h * 0.6;
         const cw = this.col_width();
-        const center = (n) => this.x_pos(n) + cw / 2;
+        // Resolve a node key (always a String) back to its column's original
+        // threshold so x_pos gets the right type — important for continuous x,
+        // where x_pos misreads a numeric string as a date.
+        const col_by_key = new Map(
+            this.model.faceted_bins[this.facet].column.map(c => [String(c.threshold), c]));
+        const x_of = (key) => {
+            const col = col_by_key.get(String(key));
+            return col ? this.x_pos(col.threshold) : NaN;
+        };
+        const center = (key) => x_of(key) + cw / 2;
 
-        // The source-column outline is a hover/pin affordance drawn for ANY
-        // categorical x. Arcs + co-occurring-column highlights are added only
-        // when the (list) x actually has co-occurrence.
+        // The source-column outline is a hover/pin affordance drawn for ANY x.
+        // Arcs + co-occurring-column highlights are added only when the (list) x
+        // actually has co-occurrence.
         const has_co = this.model.x_has_co_occurrence(this.facet);
         const hl = ribbon.append('g').attr('class', 'ribbon-highlights');
         const arcs = ribbon.append('g').attr('class', 'ribbon-arcs');
@@ -775,7 +811,7 @@ class Heatmap{
             if(!marked.has(String(src))){
                 marked.add(String(src));
                 hl.append('rect')
-                    .attr('x', this.x_pos(src)).attr('y', baseline)
+                    .attr('x', x_of(src)).attr('y', baseline)
                     .attr('width', cw).attr('height', cell_h)
                     .attr('fill', 'none').attr('stroke', RIBBON_COLOR).attr('stroke-width', 2);
             }
@@ -786,7 +822,7 @@ class Heatmap{
                 const ox = center(other);
                 if(!isFinite(ox)) continue;
                 hl.append('rect')
-                    .attr('x', this.x_pos(other)).attr('y', baseline)
+                    .attr('x', x_of(other)).attr('y', baseline)
                     .attr('width', cw).attr('height', cell_h)
                     .attr('fill', RIBBON_COLOR).attr('opacity', 0.08 + 0.22 * strength);
 
@@ -804,6 +840,223 @@ class Heatmap{
         }
     }
 
+    // ---- cell-pin ------------------------------------------------------------
+
+    /** Toggles a (column, row) cell in the cell-pin set, updates the selection
+     *  (union of pinned cells' records) and re-fills the heatmap highlights. */
+    toggle_pinned_cell(threshold, row){
+        const key = `${threshold}|${row}`;
+        if(this.pinned_cells.has(key)) this.pinned_cells.delete(key);
+        else this.pinned_cells.add(key);
+        this.model.set_pinned_cell_selection(this.facet, [...this.pinned_cells],
+            [`${this.facet}_legend`]);
+        this.refresh_cell_fills();
+    }
+
+    /** Re-applies manage_highlight to every cell rect without a full re-render. */
+    refresh_cell_fills(){
+        const self = this;
+        this.view.selectAll('.column').each(function(col_data){
+            d3.select(this).selectAll('.row').each(function(row_data, row_num){
+                d3.select(this).attr('fill', () =>
+                    col_data.bins[row_num].count > 0
+                        ? self.manage_highlight(col_data, row_num)
+                        : 'rgba(240,240,240)');
+            });
+        });
+    }
+
+    // ---- interaction mode + 2D brush ----------------------------------------
+
+    /** Reconciles per-mode overlays with the current model.interaction_mode:
+     *  clears the other modes' transient state, draws column ribbons in
+     *  column-pin, and attaches/detaches the cell brush in 2d-brush. */
+    apply_interaction_mode(){
+        const mode = this.model.interaction_mode;
+        if(mode !== 'column-pin'){ this.pinned_cols = []; }
+        if(mode !== 'cell-pin'){ this.pinned_cells.clear(); }
+        if(mode !== '2d-brush'){ this.remove_cell_brush(); this.brushed_cells = null; }
+
+        this.draw_ribbons(mode === 'column-pin' ? this.pinned_cols : []);
+        if(mode === '2d-brush'){ this.ensure_cell_brush(); this.reflect_cell_brush(); }
+    }
+
+    /** The set of views kept in sync by any brush/selection on this facet. */
+    _linked_targets(){
+        return [`${this.facet}_heatmap`, `${this.facet}_bottom_histogram`,
+                `${this.facet}_right_histogram`, `${this.facet}_legend`];
+    }
+
+    /** Attaches a d3.brush over the cell area (once) for 2D-brush mode. */
+    ensure_cell_brush(){
+        const self = this;
+        if(!this.view.select('.cell-brush').empty()) return;
+        const cols = this.model.faceted_bins[this.facet].column;
+        if(!cols || !cols.length) return;
+        const cw = this.col_width();
+        const xs = cols.map(c => this.x_pos(c.threshold));
+        const x0 = Math.min(...xs);
+        const x1 = Math.max(...xs) + cw;
+        const y0 = OVERVIEW_LAYOUT.inner_padding;
+        const y1 = OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding;
+        this.cell_brush = d3.brush()
+            .extent([[x0, y0], [x1, y1]])
+            // Ignore programmatic brush.move (sourceEvent null) so reflecting the
+            // shared ranges onto this brush can't re-fire the selection loop.
+            .on('end', function(event){ if(!event.sourceEvent) return; self.on_cell_brush_end(event.selection); });
+        this.view.append('g').attr('class', 'cell-brush').call(this.cell_brush);
+    }
+
+    /** Positions the heatmap box brush from the shared ranges (continuous x).
+     *  Categorical uses cell membership, not a range, so it isn't reflected. */
+    reflect_cell_brush(){
+        const g = this.view.select('.cell-brush');
+        if(g.empty() || !this.cell_brush || this.x_is_band) return;
+        const xr = this.model.brushed_ranges[this.facet].x_range;
+        const yr = this.model.brushed_ranges[this.facet].y_range;
+        if(xr.length === 2 && yr.length === 2){
+            const px = [this.scale_x.scale(xr[0]), this.scale_x.scale(xr[1])];
+            const py = [this.scale_y_blocks(yr[0]), this.scale_y_blocks(yr[1])];
+            g.call(this.cell_brush.move, [
+                [Math.min(...px), Math.min(...py)],
+                [Math.max(...px), Math.max(...py)],
+            ]);
+        } else {
+            g.call(this.cell_brush.move, null);
+        }
+    }
+
+    remove_cell_brush(){ this.view.select('.cell-brush').remove(); this.cell_brush = null; }
+
+    /** Maps a brushed pixel rectangle to a record selection. Categorical x →
+     *  union of covered cells' indices (membership highlight); continuous x →
+     *  x-data + y-row ranges reusing the existing brush plumbing. */
+    on_cell_brush_end(selection){
+        const targets = this._linked_targets();
+        const ip = OVERVIEW_LAYOUT.inner_padding;
+        if(!selection){
+            this.brushed_cells = null;
+            this.model.brushed_ranges[this.facet].x_range = [];
+            this.model.brushed_ranges[this.facet].y_range = [];
+            this.model.brushed_data[this.facet] = new Int32Array(0);
+            this.model._finalize_selection(targets, false);
+            this.refresh_cell_fills();
+            return;
+        }
+        const [[x0, y0], [x1, y1]] = selection;
+
+        if(this.x_is_band){
+            const cols = this.model.faceted_bins[this.facet].column;
+            const cw = this.col_width();
+            const cell_h = (OVERVIEW_LAYOUT.height - 2 * ip) / (cols[0] ? cols[0].bins.length : 1);
+            const keys = [];
+            for(const col of cols){
+                const cx = this.x_pos(col.threshold);
+                if(cx + cw < x0 || cx > x1) continue;
+                for(let row = 0; row < col.bins.length; row++){
+                    const ry = this.scale_y_blocks(row);
+                    if(ry + cell_h < y0 || ry > y1) continue;
+                    keys.push(`${col.threshold}|${row}`);
+                }
+            }
+            this.brushed_cells = new Set(keys);
+            this.model.set_pinned_cell_selection(this.facet, keys, targets);
+            this.refresh_cell_fills();
+        } else {
+            // Continuous: invert pixels to x-data + y-row ranges, reuse the
+            // existing X+Y brush compute/highlight.
+            const xa = this.scale_x.scale.invert(x0);
+            const xb = this.scale_x.scale.invert(x1);
+            const x_lo = xa <= xb ? xa : xb;
+            const x_hi = xa <= xb ? xb : xa;
+            const ra = this.scale_y_blocks.invert(y0);
+            const rb = this.scale_y_blocks.invert(y1);
+            const hi = Math.max(ra, rb);   // y_range stored descending [high, low]
+            const lo = Math.min(ra, rb);
+            this.model.brushed_ranges[this.facet].x_range = [x_lo, x_hi];
+            this.model.brushed_ranges[this.facet].y_range = [hi, lo];
+            this.model._apply_brush_selection(this.facet, targets, false);
+        }
+    }
+
+    // ---- interaction-mode toggle buttons ------------------------------------
+
+    /** Renders the three square mode buttons (cell-pin / column-pin / 2D-brush)
+     *  with distinct SVG glyph icons, top-right of the heatmap. */
+    render_mode_buttons(){
+        const self = this;
+        const modes = [
+            { key: 'cell-pin',   draw: (g, s) => self.draw_cell_icon(g, s) },
+            { key: 'column-pin', draw: (g, s) => self.draw_column_icon(g, s) },
+            { key: '2d-brush',   draw: (g, s) => self.draw_brush_icon(g, s) },
+        ];
+        const size = 24, gap = 6;
+        const total = modes.length * size + (modes.length - 1) * gap;
+        const x0 = draw_width - total;            // right-aligned within the plot
+        const y0 = OVERVIEW_LAYOUT.inner_padding - size - 6;
+
+        let bar = this.view.select('.mode-bar');
+        if(bar.empty()) bar = this.view.append('g').attr('class', 'mode-bar');
+        bar.raise();
+        bar.selectAll('*').remove();
+
+        modes.forEach((m, i) => {
+            const active = self.model.interaction_mode === m.key;
+            const g = bar.append('g')
+                .attr('class', 'mode-btn')
+                .attr('transform', `translate(${x0 + i * (size + gap)},${y0})`)
+                .style('cursor', 'pointer')
+                .on('click', () => self.model.set_interaction_mode(m.key));
+            g.append('rect')
+                .attr('width', size).attr('height', size).attr('rx', 4)
+                .attr('fill', active ? '#eef0fb' : '#ffffff')
+                .attr('stroke', active ? RIBBON_COLOR : '#bbbbbb')
+                .attr('stroke-width', active ? 2 : 1);
+            const inner = g.append('g').attr('transform', 'translate(4,4)');
+            m.draw(inner, size - 8);
+        });
+    }
+
+    /** 2×2 grid; top-left accent, others muted. Fills the icon area (centered). */
+    draw_cell_icon(g, s){
+        const gap = s * 0.14;
+        const sq = (s - gap) / 2;
+        const cells = [[0, 0, ICON_ACCENT], [1, 0, ICON_MUTED], [0, 1, ICON_MUTED], [1, 1, ICON_MUTED]];
+        for(const [cx, cy, fill] of cells){
+            g.append('rect')
+                .attr('x', cx * (sq + gap)).attr('y', cy * (sq + gap))
+                .attr('width', sq).attr('height', sq).attr('fill', fill);
+        }
+    }
+
+    /** Three columns of stacked squares; left column accent, others muted. */
+    draw_column_icon(g, s){
+        const ncol = 3, nsq = 4, gapx = s * 0.12;
+        const colw = (s - (ncol - 1) * gapx) / ncol;
+        const sqh = s / nsq;
+        for(let c = 0; c < ncol; c++){
+            const fill = c === 0 ? ICON_ACCENT : ICON_MUTED;
+            for(let r = 0; r < nsq; r++){
+                g.append('rect')
+                    .attr('x', c * (colw + gapx)).attr('y', r * sqh)
+                    .attr('width', colw).attr('height', sqh - 0.5).attr('fill', fill);
+            }
+        }
+    }
+
+    /** Low-opacity square with a brighter outline + a bold "+" brush cursor. */
+    draw_brush_icon(g, s){
+        const boxR = s * 0.7;
+        g.append('rect')
+            .attr('width', boxR).attr('height', boxR)
+            .attr('fill', ICON_ACCENT).attr('opacity', 0.25)
+            .attr('stroke', RIBBON_COLOR).attr('stroke-width', 1.5);
+        // "+" cursor at the bottom-right corner of the box.
+        const cx = boxR, cy = boxR, arm = s * 0.22;
+        g.append('path')
+            .attr('d', `M${cx - arm},${cy} H${cx + arm} M${cx},${cy - arm} V${cy + arm}`)
+            .attr('stroke', '#333333').attr('stroke-width', 2.5).attr('stroke-linecap', 'round');
+    }
 
 }
 

@@ -13,6 +13,7 @@ class Histogram{
         this.orientation = orientation;
         this.id_token = `${facet}_${orientation}_histogram`;
         this.view = null;
+        this._user_brushing = false;   // true while the user drags this brush
      
         this.scale_y = null;
         this.scale_y_inverse = null;
@@ -76,7 +77,13 @@ class Histogram{
 
             this.brush = d3.brushX()
                 .extent([[OVERVIEW_LAYOUT.inner_padding, 0], [OVERVIEW_LAYOUT.width - OVERVIEW_LAYOUT.inner_padding, this.height-HISTOGRAM_LAYOUT.inner_padding]])
-                .on("end", function({selection}){
+                .on("start", function(event){ if(event.sourceEvent) self._user_brushing = true; })
+                .on("end", function(event){
+                    // Ignore programmatic brush.move (reflecting shared ranges) so
+                    // the linked-brush sync can't re-fire into an update loop.
+                    if(!event.sourceEvent) return;
+                    self._user_brushing = false;
+                    const selection = event.selection;
                     // Default to [] so that an unrecognized scale type (or
                     // race where scale_types isn't yet populated) doesn't
                     // leave `select` undefined.
@@ -89,6 +96,10 @@ class Histogram{
                             select = selection.map(self.scale_x.scale.invert, self.scale_x.scale).map((d)=>{return d});
                         }
                     }
+                    // Only the heatmap (highlight + box reflection) and legend
+                    // need updating — NOT the sibling histogram. Re-rendering the
+                    // other histogram would call brush.move on it and clobber an
+                    // in-progress brush there (the async resolve lands mid-gesture).
                     self.model.update_subselected_data(self.facet, [`${self.facet}_heatmap`, `${self.facet}_legend`], select, "x");
                 });
 
@@ -126,13 +137,19 @@ class Histogram{
 
             this.brush = d3.brushY()
                 .extent([[0, HISTOGRAM_LAYOUT.inner_padding], [this.width, this.height - OVERVIEW_LAYOUT.inner_padding]])
-                .on("end", function({selection}){
+                .on("start", function(event){ if(event.sourceEvent) self._user_brushing = true; })
+                .on("end", function(event){
+                    if(!event.sourceEvent) return;   // ignore programmatic brush.move
+                    self._user_brushing = false;
+                    const selection = event.selection;
                     let select;
                     if(selection){
                         select = selection.map(self.scale_y.invert, self.scale_y).map((d)=>{return d+0.1})
                     }else{
                         select = [];
                     }
+                    // See bottom-brush note: target only heatmap + legend so the
+                    // sibling histogram's in-progress brush isn't clobbered.
                     self.model.update_subselected_data(self.facet, [`${self.facet}_heatmap`, `${self.facet}_legend`], select, "y");
                 });
 
@@ -221,6 +238,31 @@ class Histogram{
         }
     }
 
+    /** Positions this histogram's brush from the shared brushed_ranges so a
+     *  brush made elsewhere (heatmap) is reflected on this axis. brush.move is
+     *  programmatic (sourceEvent null) → the end handler ignores it, avoiding a
+     *  feedback loop. Skipped while the user is actively brushing THIS histogram
+     *  so a late async re-render can't clobber an in-progress gesture. */
+    reflect_brush(){
+        const ranges = this.model.brushed_ranges[this.facet];
+        if(!ranges || !this.brush || this._user_brushing) return;
+        if(this.orientation === 'bottom'){
+            const xr = ranges.x_range;
+            const g = this.view.select('.h-brush');
+            if(g.empty()) return;
+            g.call(this.brush.move, (xr && xr.length === 2)
+                ? [this.scale_x.scale(xr[0]), this.scale_x.scale(xr[1])].sort((a, b) => a - b)
+                : null);
+        } else if(this.orientation === 'right'){
+            const yr = ranges.y_range;
+            const g = this.view.select('.v-brush');
+            if(g.empty()) return;
+            g.call(this.brush.move, (yr && yr.length === 2)
+                ? [this.scale_y(yr[0]), this.scale_y(yr[1])].sort((a, b) => a - b)
+                : null);
+        }
+    }
+
     /**
      * Renders the histogram by updating the DOM elements based on the current data.
      */
@@ -304,7 +346,9 @@ class Histogram{
             }
         }
 
-    }  
+        // Reflect any shared brush range onto this histogram's axis.
+        this.reflect_brush();
+    }
 }
 
 export {Histogram};

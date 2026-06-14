@@ -64,6 +64,44 @@ def test_whitespace_around_members_is_stripped():
     assert _parse(["a, b ,c"]) == [["a", "b", "c"]]
 
 
+def test_array_columns_are_auto_detected_as_list_columns():
+    # A column of genuine arrays/lists (e.g. a parquet list column) is detected
+    # and treated as a list column without being declared — so it's parsed and
+    # flagged is_list rather than dropped by the array guard.
+    df = pd.DataFrame({
+        "nodes":  [["a", "b"], ["b"], np.array(["c", "a"]), ["d"]],
+        "y":      [1.0, 2.0, 3.0, 4.0],
+        "color":  [5.0, 6.0, 7.0, 8.0],
+    })
+    gp = Guidepost()                      # no list_columns declared
+    gp.suppress_warnings = True
+    gp.load_data(df)
+    assert "nodes" in gp._effective_list_columns
+    assert gp._summary_stats["nodes"]["is_list"] is True
+    assert "nodes" in gp._summary_stats          # kept, not dropped
+    # array cell normalized to a deduped python list
+    assert gp.cached_records_df["nodes"].iloc[2] == ["c", "a"]
+
+
+def test_timedelta_columns_converted_to_seconds():
+    # Timedelta columns are kept (not dropped) and converted to numeric seconds
+    # so they're usable as continuous variables.
+    secs = list(range(1, 31))  # 30 distinct → continuous
+    df = pd.DataFrame({
+        "dur": pd.to_timedelta(secs, unit="s"),
+        "a": [float(i) for i in range(30)],
+        "b": [float(i * 2) for i in range(30)],
+        "c": ["x", "y"] * 15,
+        "d": ["p", "q"] * 15,
+    })
+    gp = Guidepost()
+    gp.suppress_warnings = True
+    gp.load_data(df)
+    s = gp._summary_stats["dur"]
+    assert s["semantic_type"] == "continuous"   # numeric, not dropped
+    assert s["min"] == 1.0 and s["max"] == 30.0  # in seconds
+
+
 POLARIS_CSV = os.path.join(
     os.path.dirname(__file__), "data", "ANL-ALCF-DJC-POLARIS_20250101_20251231.csv.gz"
 )
