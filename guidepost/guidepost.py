@@ -141,8 +141,14 @@ class Guidepost(anywidget.AnyWidget):
             and not info.get('is_list'))
         if n_real_categorical < 2:
             n_rows = len(o_df)
-            o_df[SYNTHETIC_FACET_COL] = SYNTHETIC_FACET_VALUE
-            summary_stats[SYNTHETIC_FACET_COL] = {
+            # Resolve a name that doesn't collide with a real column (which would
+            # silently overwrite the user's data). The frontend keys off the
+            # is_synthetic flag, not the name, so any unique name works.
+            synth_col = SYNTHETIC_FACET_COL
+            while synth_col in o_df.columns:
+                synth_col += "_"
+            o_df[synth_col] = SYNTHETIC_FACET_VALUE
+            summary_stats[synth_col] = {
                 "dtype": "object",
                 "semantic_type": "categorical",
                 "is_synthetic": True,

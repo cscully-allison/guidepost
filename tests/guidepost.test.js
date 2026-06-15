@@ -410,6 +410,46 @@ describe('No / insufficient categorical columns (synthetic fallback)', () => {
 });
 
 
+describe('categorical filter — "(missing)" bucket', () => {
+    // Facet 'A', 12 rows; even indices have a null category, odd indices 'x'.
+    function nullCatFixture(){
+        const x = {}, y = {}, color = {}, cat = {}, fac = {};
+        for(let i = 0; i < 12; i++){
+            x[i] = i + 1; y[i] = (i + 1) * 2; color[i] = i; fac[i] = 'A';
+            cat[i] = (i % 2 === 0) ? null : 'x';
+        }
+        return { x, y, color, cat, fac };
+    }
+
+    function totalFilteredCount(model, fac){
+        let total = 0;
+        for(const col of model.faceted_bins[fac].column) total += col.count;
+        return total;
+    }
+
+    it('filtering on "(missing)" selects exactly the null-category rows', () => {
+        const model = buildModel(nullCatFixture());
+        model.faceted_states['A'].filter = ['(missing)'];
+        model.calculate_box_metrics('A', model.x_axis_thresholds['A'], model.y_axis_thresholds['A']);
+        assert.strictEqual(totalFilteredCount(model, 'A'), 6);
+    });
+
+    it('filtering on a real category excludes the null-category rows', () => {
+        const model = buildModel(nullCatFixture());
+        model.faceted_states['A'].filter = ['x'];
+        model.calculate_box_metrics('A', model.x_axis_thresholds['A'], model.y_axis_thresholds['A']);
+        assert.strictEqual(totalFilteredCount(model, 'A'), 6);
+    });
+
+    it('the bar chart bins null categories under "(missing)"', () => {
+        const model = buildModel(nullCatFixture());
+        const bins = model.categorical_bins['A'];
+        const missing = bins.find(b => b.key === '(missing)');
+        assert.ok(missing && missing.val === 6);
+    });
+});
+
+
 describe('JSModel — interaction state', () => {
     let model;
     beforeEach(() => { model = buildModel(); });

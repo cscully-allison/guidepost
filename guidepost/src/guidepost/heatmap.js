@@ -381,7 +381,7 @@ class Heatmap{
      */
     abbreviate_number(num) {
         const n = Number(num);
-        if (num == null || Number.isNaN(n)) return '';
+        if (num == null || !Number.isFinite(n)) return '';
         const sign = n < 0 ? '-' : '';
         const abs = Math.abs(n);
         // 3 significant figures, trailing zeros/dot trimmed (1.20 → "1.2").

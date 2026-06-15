@@ -802,7 +802,10 @@ class JSModel{
         for(let bin in current_bins){
             const source = original[bin];
             const filtered_bin = has_filter
-                ? source.filter(d => filter.includes(d[cat_var]))
+                // Coerce null to MISSING_LABEL so a "(missing)" filter token
+                // matches null-category rows (the bar chart bins them under that
+                // same label) instead of selecting nothing.
+                ? source.filter(d => filter.includes(d[cat_var] == null ? MISSING_LABEL : d[cat_var]))
                 : source;
 
             this.faceted_bins[fac].column[bin] = this._column_stats_from_rows(
@@ -1316,7 +1319,8 @@ class JSModel{
         // Honor an active category filter so the detail matches the overview.
         const has_filter = this.faceted_states[fac].filter.length > 0;
         const cat_var = this.vars.categorical;
-        const filtered = has_filter ? rows.filter(d => this.faceted_states[fac].filter.includes(d[cat_var])) : rows;
+        // Coerce null to MISSING_LABEL so a "(missing)" filter matches null-category rows (see calculate_box_metrics).
+        const filtered = has_filter ? rows.filter(d => this.faceted_states[fac].filter.includes(d[cat_var] == null ? MISSING_LABEL : d[cat_var])) : rows;
         cache[ck] = this._column_stats_from_rows(
             fac, filtered, frontier_col.key, this.y_axis_thresholds[fac], { update_color_range: false });
         return cache[ck];

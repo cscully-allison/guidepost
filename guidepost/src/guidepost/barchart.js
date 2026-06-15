@@ -151,7 +151,11 @@ class CategoricalBarChart{
         this.calc_bar_height = Math.min(this.max_bar_height, this.drawable_height/this.n);
 
         if(this.orientation == 'bottom'){
-            if(this.model.is_more_than_n_orders_of_magnitude(0, top_n_cats[0].val, 3)){
+            // Log only when the counts genuinely span >3 orders of magnitude.
+            // top_n_cats is sorted descending, so [last] is the smallest visible
+            // count (>=1). Passing a hardcoded 0 here previously forced log every
+            // time (log10(0) = -Infinity), making the linear branch dead.
+            if(this.model.is_more_than_n_orders_of_magnitude(top_n_cats[top_n_cats.length - 1].val, top_n_cats[0].val, 3)){
                 let local_log_floor = 0.3
                 this.scale_y = d3.scaleLog()
                                     .domain([local_log_floor, top_n_cats[0].val])
@@ -187,7 +191,11 @@ class CategoricalBarChart{
                             .range([CAT_HISTOGRAM_LAYOUT.inner_padding, this.height - CAT_HISTOGRAM_LAYOUT.inner_padding])
                             .padding(0.1);
 
-            if(this.model.is_more_than_n_orders_of_magnitude(0, top_n_cats[0].val, 3)){
+            // Log only when the counts genuinely span >3 orders of magnitude.
+            // top_n_cats is sorted descending, so [last] is the smallest visible
+            // count (>=1). Passing a hardcoded 0 here previously forced log every
+            // time (log10(0) = -Infinity), making the linear branch dead.
+            if(this.model.is_more_than_n_orders_of_magnitude(top_n_cats[top_n_cats.length - 1].val, top_n_cats[0].val, 3)){
                 let local_log_floor = 0.3
                 this.scale_x = d3.scaleLog()
                                     .domain([local_log_floor, top_n_cats[0].val])
