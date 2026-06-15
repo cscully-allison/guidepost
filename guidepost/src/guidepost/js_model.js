@@ -1718,11 +1718,20 @@ class JSModel{
 
     /**
      * Builds the {key, val}[] categorical-count list used by the bar chart, sorted descending.
+     * Empty when there is no real categorical variable — either none configured,
+     * or the role is bound to the backend's synthetic "no grouping" column (the
+     * no-categorical-dataset fallback) — so the bar chart renders its empty state.
      */
     _build_categorical_bins(data, fac){
+        const cat = this.vars.categorical;
+        const stats = cat && this.feature_summary_stats[cat];
+        if(!cat || (stats && stats.is_synthetic)){
+            this.categorical_bins[fac] = [];
+            return;
+        }
         const cat_counts = {};
         for(const record of data[fac]){
-            let key = record[this.vars.categorical];
+            let key = record[cat];
             if(key == null) key = MISSING_LABEL;
             cat_counts[key] = (cat_counts[key] || 0) + 1;
         }

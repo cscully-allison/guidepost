@@ -34,8 +34,11 @@ class ConfigurationInterface{
     }
 
     // Builds the option label, appending "(N missing)" when the column has nulls.
+    // The backend's synthetic "no grouping" column reads as "n/a" so the Group-By
+    // / Categorical dropdowns present it as an explicit no-categorical choice.
     _option_label(col){
         const stats = this.model.feature_summary_stats[col];
+        if(stats && stats.is_synthetic) return 'n/a';
         const n = stats && stats.n_missing ? stats.n_missing : 0;
         return n > 0 ? `${col} (${n.toLocaleString()} missing)` : col;
     }
@@ -221,6 +224,12 @@ class ConfigurationInterface{
                     for(const c of datetime_cols){
                         if(!potential_options.includes(c)) potential_options.push(c);
                     }
+                }
+                // The synthetic "no grouping" column is only a meaningful (n/a)
+                // choice for the two categorical roles; keep it out of x (which
+                // also accepts categorical) and everywhere else.
+                if(config['name'] !== 'facet_by' && config['name'] !== 'categorical'){
+                    potential_options = potential_options.filter(c => !(sum_stats[c] && sum_stats[c]['is_synthetic']));
                 }
                 this.model.set_config_options(config['name'], potential_options);
             }

@@ -181,15 +181,22 @@ class Heatmap{
         }
 
         
-        view.append('text')
-            .text(`Group: ${this.facet}`)
-            .attr('baseline', 'bottom')
-            .attr('anchor', 'middle')
-            .attr('x', (draw_width)/2)
-            // Header band (above the reserved pin-label band) — see bug 1.a.
-            .attr('y', OVERVIEW_LAYOUT.inner_padding - TOP_MARGIN + 16)
-            .style('font-size', '12pt')
-            .style('font-weight', 'bold');
+        // Suppress the "Group:" title when faceting on the backend's synthetic
+        // "no grouping" column — there's a single ungrouped facet, so a group
+        // label would be misleading.
+        const facet_stats = this.model.feature_summary_stats[this.model.vars.facet_by];
+        const synthetic_facet = !!(facet_stats && facet_stats.is_synthetic);
+        if(!synthetic_facet){
+            view.append('text')
+                .text(`Group: ${this.facet}`)
+                .attr('baseline', 'bottom')
+                .attr('anchor', 'middle')
+                .attr('x', (draw_width)/2)
+                // Header band (above the reserved pin-label band) — see bug 1.a.
+                .attr('y', OVERVIEW_LAYOUT.inner_padding - TOP_MARGIN + 16)
+                .style('font-size', '12pt')
+                .style('font-weight', 'bold');
+        }
 
 
         view.append('text')

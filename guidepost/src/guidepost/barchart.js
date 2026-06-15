@@ -28,6 +28,7 @@ class CategoricalBarChart{
      * Performs the initial rendering of the categorical histogram.
      */
     initial_render(){
+        if(this.is_empty()){ this._render_empty_message(); return; }
         if(this.orientation == 'bottom'){
             
             //create the histograms
@@ -100,9 +101,44 @@ class CategoricalBarChart{
     }
 
     /**
+     * True when there is no categorical variable to chart — none configured or
+     * the role is bound to the backend's synthetic "no grouping" column, so
+     * categorical_bins for this facet is empty. The chart renders an "n/a"
+     * empty-state message instead of scales/axes/bars.
+     */
+    is_empty(){
+        const bins = this.model.categorical_bins[this.facet];
+        return !bins || bins.length === 0;
+    }
+
+    /** Centered two-line "n/a" note shown when there is no categorical variable. */
+    _render_empty_message(){
+        const x_offset = X_VARIABLE_OFFSET + OVERVIEW_LAYOUT.width;
+        const y_offset = Y_VARIABLE_OFFSET + CAT_HISTOGRAM_LAYOUT.outer_margin + OVERVIEW_LAYOUT.height + TOP_MARGIN;
+        const grp = this.parent.append('g')
+            .attr('class', this.orientation == 'bottom' ? 'faceted-h-hist' : 'faceted-v-hist')
+            .attr('transform', `translate(${x_offset},${y_offset})`);
+        grp.append('text')
+            .attr('class', 'empty-categorical-note')
+            .text('Categorical: n/a')
+            .attr('text-anchor', 'middle')
+            .attr('transform', `translate(${this.width / 2},${this.height / 2})`)
+            .style('fill', '#a04040')
+            .style('font-size', '10pt');
+        grp.append('text')
+            .text('No categorical variable')
+            .attr('text-anchor', 'middle')
+            .attr('transform', `translate(${this.width / 2},${this.height / 2 + 16})`)
+            .style('fill', '#888888')
+            .style('font-size', '8pt');
+        this.view = grp;
+    }
+
+    /**
      * Sets up the scales for the categorical histogram based on the current data.
      */
     setup_scales(){
+        if(this.is_empty()) return;
         this.n = Math.min(this.model.categorical_bins[this.facet].length, this.n);
         let top_n_cats = this.model.categorical_bins[this.facet].slice(0,this.n);
         
@@ -180,6 +216,7 @@ class CategoricalBarChart{
     render(){
 
         const self = this;
+        if(this.is_empty()) return;
         let top_n_cats = this.model.categorical_bins[this.facet].slice(0,this.n);
         let update_targets = [`${this.facet}_heatmap`, `${this.facet}_right_histogram`, `${this.facet}_bottom_histogram`, `${this.facet}_legend`];
 
