@@ -21,6 +21,22 @@ from .aggregation import AggregationEngine
 SYNTHETIC_FACET_COL = "__gp_no_grouping__"
 SYNTHETIC_FACET_VALUE = "All records"
 
+
+class Selection:
+    """Wrapper around the records selected in the widget.
+
+    The selected DataFrame is exposed as `.dataframe`. This indirection
+    leaves room to attach further selection metadata in the future without
+    changing the `gp.selection` access pattern.
+    """
+
+    def __init__(self, dataframe):
+        self.dataframe = dataframe
+
+    def __repr__(self):
+        return f"Selection(dataframe={self.dataframe!r})"
+
+
 class Guidepost(anywidget.AnyWidget):
 
     _esm = os.path.join(os.path.dirname(__file__), "static",  "guidepost.js")
@@ -37,7 +53,6 @@ class Guidepost(anywidget.AnyWidget):
     
     selected_records = traitlets.Unicode("[]").tag(sync=True)
     records_df = pd.DataFrame()
-    selection = None
 
     _summary_stats = traitlets.Dict({}).tag(sync=True)
 
@@ -272,7 +287,10 @@ class Guidepost(anywidget.AnyWidget):
 
     @property
     def selection(self):
-        return self.retrieve_selected_data()
+        # `selection` is intentionally an object wrapper rather than the bare
+        # DataFrame so additional selection metadata can be hung off it later
+        # without breaking callers. The DataFrame lives on `.dataframe`.
+        return Selection(self.retrieve_selected_data())
 
     def retrieve_selected_data(self):
         if self.cached_records_df is None:
