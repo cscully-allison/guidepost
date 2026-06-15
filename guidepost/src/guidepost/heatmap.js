@@ -1,5 +1,5 @@
 import * as d3 from "https://esm.sh/d3@7";
-import { SHARED_X_SCALE, OVERVIEW_LAYOUT, num_rows, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, draw_width, MIN_BAR_WIDTH, draw_height, zoom_factor_h, zoom_factor_v, MAX_NODE_LABEL_CHARS, NODE_LABEL_BAND, COUNT_STRIP_HEIGHT, COUNT_STRIP_MARGIN, SHAREDNESS_STRIP_HEIGHT, SHAREDNESS_STRIP_MARGIN, OVERVIEW_STRIP_HEIGHT, OVERVIEW_STRIP_MARGIN, OVERVIEW_BRUSH_MIN_PX, RICH_BLUE, RICH_TAN, RIBBON_COLOR, ICON_ACCENT, ICON_MUTED, SHAREDNESS_BASE, TOP_MARGIN, PIN_LABEL_BAND_HEIGHT } from "./consts";
+import { SHARED_X_SCALE, OVERVIEW_LAYOUT, VERT_HISTOGRAM_LAYOUT, num_rows, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, draw_width, MIN_BAR_WIDTH, draw_height, zoom_factor_h, zoom_factor_v, MAX_NODE_LABEL_CHARS, NODE_LABEL_BAND, COUNT_STRIP_HEIGHT, COUNT_STRIP_MARGIN, SHAREDNESS_STRIP_HEIGHT, SHAREDNESS_STRIP_MARGIN, OVERVIEW_STRIP_HEIGHT, OVERVIEW_STRIP_MARGIN, OVERVIEW_BRUSH_MIN_PX, RICH_BLUE, RICH_TAN, RIBBON_COLOR, ICON_ACCENT, ICON_MUTED, SHAREDNESS_BASE, TOP_MARGIN, PIN_LABEL_BAND_HEIGHT } from "./consts";
 import { SmartScale } from "./smartscale";
 
 // Max height (px) of the co-occurrence arcs that bow below the sharedness strip.
@@ -192,8 +192,9 @@ class Heatmap{
                 .attr('baseline', 'bottom')
                 .attr('anchor', 'middle')
                 .attr('x', (draw_width)/2)
-                // Header band (above the reserved pin-label band) — see bug 1.a.
-                .attr('y', OVERVIEW_LAYOUT.inner_padding - TOP_MARGIN + 16)
+                // Top of the header band, horizontally aligned with the mode
+                // buttons' row (top-right) and clear of the pin-label band below.
+                .attr('y', OVERVIEW_LAYOUT.inner_padding - TOP_MARGIN + 7)
                 .style('font-size', '12pt')
                 .style('font-weight', 'bold');
         }
@@ -1623,20 +1624,37 @@ class Heatmap{
     render_mode_buttons(){
         const self = this;
         const modes = [
-            { key: 'cell-pin',   draw: (g, s) => self.draw_cell_icon(g, s) },
-            { key: 'column-pin', draw: (g, s) => self.draw_column_icon(g, s) },
-            { key: '2d-brush',   draw: (g, s) => self.draw_brush_icon(g, s) },
+            { key: 'cell-pin',   label: 'Cell Selection',   draw: (g, s) => self.draw_cell_icon(g, s) },
+            { key: 'column-pin', label: 'Column Selection', draw: (g, s) => self.draw_column_icon(g, s) },
+            { key: '2d-brush',   label: 'Brush Selection',  draw: (g, s) => self.draw_brush_icon(g, s) },
         ];
         const size = 24, gap = 6;
         const total = modes.length * size + (modes.length - 1) * gap;
-        const x0 = draw_width - total;            // right-aligned within the plot
-        // Header band, top-right — clear of the pin-label band below (bug 1.a).
-        const y0 = OVERVIEW_LAYOUT.inner_padding - TOP_MARGIN + 2;
+        // Align the buttons' right edge with the right histogram's right edge
+        // (which sits at faceted-view x = X_VARIABLE_OFFSET + OVERVIEW.width - 5,
+        // width VERT_HISTOGRAM_LAYOUT.width). Expressed in the heatmap view's own
+        // coords (view origin = X_VARIABLE_OFFSET + OVERVIEW.outer_margin), so
+        // X_VARIABLE_OFFSET cancels. This overhangs the histogram to the right of
+        // the heatmap plot, in the top whitespace above it.
+        const right_hist_right = OVERVIEW_LAYOUT.width - 5 + VERT_HISTOGRAM_LAYOUT.width - OVERVIEW_LAYOUT.outer_margin;
+        const x0 = right_hist_right - total;
+        // Sit in the top-right corner of the facet, above the pin-label band so
+        // pinned column labels (which rise up-right) don't occlude the buttons.
+        const y0 = OVERVIEW_LAYOUT.inner_padding - TOP_MARGIN - 10;
 
         let bar = this.view.select('.mode-bar');
         if(bar.empty()) bar = this.view.append('g').attr('class', 'mode-bar');
         bar.raise();
         bar.selectAll('*').remove();
+
+        // Caption above the button row.
+        bar.append('text')
+            .attr('x', x0 + total / 2)
+            .attr('y', y0 - 5)
+            .attr('text-anchor', 'middle')
+            .style('font-size', '8pt')
+            .style('fill', '#555555')
+            .text('Selection Modes');
 
         modes.forEach((m, i) => {
             const active = self.model.interaction_mode === m.key;
@@ -1645,6 +1663,8 @@ class Heatmap{
                 .attr('transform', `translate(${x0 + i * (size + gap)},${y0})`)
                 .style('cursor', 'pointer')
                 .on('click', () => self.model.set_interaction_mode(m.key));
+            // Native hover tooltip naming the selection mode.
+            g.append('title').text(m.label);
             g.append('rect')
                 .attr('width', size).attr('height', size).attr('rx', 4)
                 .attr('fill', active ? '#eef0fb' : '#ffffff')

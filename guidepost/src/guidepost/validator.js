@@ -132,7 +132,11 @@ class Validator{
      */
     validate_variable_semantics() {
         let incorrect = [];
-        let valid_aggs = ['avg', 'variance', 'std', 'median', 'sum'];
+        // Must match the color_agg options offered in VALID_CONFIG_FIELDS (consts.js)
+        // and what the DuckDB AggregationEngine can compute (_COLOR_AGG_SQL). The
+        // prior list rejected count/max/min (all valid, dropdown-offered) and
+        // allowed variance/std (neither offered nor computable by the engine).
+        let valid_aggs = ['avg', 'mean', 'average', 'median', 'med', 'min', 'max', 'sum', 'count'];
 
         const is_datetime = (col) => {
             const dt = (this.summary_stats[col] && this.summary_stats[col].dtype) || '';
@@ -154,7 +158,7 @@ class Validator{
             const col = this.vis_configs[key];
             if(key === 'color_agg'){
                 if(!valid_aggs.includes(this.vis_configs['color_agg'])){
-                    incorrect.push({key:key, value: col, message: 'Invalid aggregation specified. Acceptable aggregations are: "avg", "variance", "std", "median", "sum"'});
+                    incorrect.push({key:key, value: col, message: 'Invalid aggregation specified. Acceptable aggregations are: "avg", "median", "min", "max", "sum", "count"'});
                 }
             }
             else if (key === 'x') {

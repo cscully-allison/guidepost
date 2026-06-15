@@ -450,6 +450,39 @@ describe('categorical filter — "(missing)" bucket', () => {
 });
 
 
+describe('datetime x detection (string timestamps)', () => {
+    // 12 daily ISO-string timestamps — pandas types these "categorical" off a
+    // CSV, but they must drive a temporal x.
+    function dateFixture(){
+        const x = {}, y = {}, color = {}, cat = {}, fac = {};
+        for(let i = 0; i < 12; i++){
+            const d = new Date(Date.UTC(2024, 0, 1 + i));
+            x[i] = d.toISOString().slice(0, 19).replace('T', ' ');
+            y[i] = (i + 1) * 2; color[i] = i; cat[i] = (i % 2) ? 'a' : 'b'; fac[i] = 'A';
+        }
+        return { x, y, color, cat, fac };
+    }
+    const stringCatSummary = { x: { semantic_type: 'categorical', dtype: 'object' } };
+
+    it('treats a string-datetime x as temporal, not categorical', () => {
+        const model = new JSModel(dateFixture(), VARS, stringCatSummary, makeAnywidgetStub());
+        assert.strictEqual(model.x_is_datetime(), true);
+        assert.strictEqual(model.x_is_categorical(), false);
+        assert.strictEqual(model.scale_types['A'].x.datetime, true);
+        assert.strictEqual(model.scale_types['A'].x.categorical, false);
+    });
+
+    it('a genuine categorical (non-date) string x stays categorical', () => {
+        const fix = dateFixture();
+        for(const k in fix.x) fix.x[k] = 'node_' + (Number(k) % 3);
+        const model = new JSModel(fix, VARS, stringCatSummary, makeAnywidgetStub());
+        assert.strictEqual(model.x_is_datetime(), false);
+        assert.strictEqual(model.x_is_categorical(), true);
+        assert.strictEqual(model.scale_types['A'].x.categorical, true);
+    });
+});
+
+
 describe('JSModel — interaction state', () => {
     let model;
     beforeEach(() => { model = buildModel(); });

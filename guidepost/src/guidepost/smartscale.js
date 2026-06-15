@@ -44,18 +44,18 @@ class SmartScale {
     }
 
     get_ticks(){
-        // need conditionally sensitive ticks
         if (this.domain.every(d => d instanceof Date)) {
-            let diffInDays = this.get_date_difference();
-            if (diffInDays <= 7) {
-                return d3.utcDay.every(1);
-            } else if (diffInDays <= 30) {
-                return d3.utcDay.every(1);
-            } else if (diffInDays <= 365) {
-                return d3.utcWeek.every(1);
-            } else {
-                return d3.utcMonth.every(1);
-            }
+            // Target a tick COUNT that fits the available pixel width rather than
+            // a fixed per-span interval. The old span buckets returned weekly
+            // ticks for any 30–365 day facet — which overlapped badly on
+            // multi-month spans and differed facet-to-facet (since each facet
+            // scales to its own date range). A fixed target count gives a
+            // consistent label density across facets, while d3's time scale
+            // still snaps to human-friendly intervals (day / week / month /
+            // year) appropriate to each facet's span.
+            const px = Math.abs(this.range[1] - this.range[0]);
+            const LABEL_PX = 90;   // comfortable spacing for a formatted date label
+            return Math.max(2, Math.floor(px / LABEL_PX));
         } else if (this.domain.every(d => typeof d === 'number')) {
             return 20;
         } else {

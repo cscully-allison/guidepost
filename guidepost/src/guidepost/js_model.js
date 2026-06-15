@@ -109,6 +109,8 @@ class JSModel{
         this._node_name_idx_cache = {};
         // Per-facet monotonic filter-request generation (stale-reply guard).
         this._filter_seq = {};
+        // Memo for x_is_datetime (keyed by the x variable name).
+        this._x_datetime_memo = { key: undefined, val: false };
         // Selection is the per-facet UNION of three independent streams:
         //   box   — the 2-d brush + the x/y histograms (one coordinated box)
         //   pin   — column-pin / cell-pin
@@ -149,7 +151,49 @@ class JSModel{
      */
     x_is_categorical(){
         const s = this.feature_summary_stats && this.feature_summary_stats[this.vars.x];
-        return !!(s && s.semantic_type === 'categorical');
+        // A string datetime column (e.g. an ISO timestamp loaded from CSV) is
+        // typed 'categorical' by pandas, but it must drive a temporal x — ordered
+        // and binned into time ranges, not banded/sorted/truncated like a real
+        // category. Exclude detected datetime columns here.
+        return !!(s && s.semantic_type === 'categorical') && !this.x_is_datetime();
+    }
+
+    /**
+     * True when the x variable is temporal: a pandas-native datetime dtype, or a
+     * column whose sampled values are Dates / date-parseable (non-numeric)
+     * strings. Mirrors the datetime sniffing the config UI (config_interface)
+     * and smart defaults (consts) already use, so the model agrees with them.
+     * Memoized per x variable (cleared on data/config rebuild).
+     */
+    x_is_datetime(){
+        const x = this.vars.x;
+        if(this._x_datetime_memo && this._x_datetime_memo.key === x) return this._x_datetime_memo.val;
+        const val = this._detect_x_datetime(x);
+        this._x_datetime_memo = { key: x, val };
+        return val;
+    }
+
+    _detect_x_datetime(x){
+        const s = this.feature_summary_stats && this.feature_summary_stats[x];
+        // Pandas-native datetime dtype is authoritative.
+        if(s && typeof s.dtype === 'string' && s.dtype.indexOf('datetime') !== -1) return true;
+        // List columns are categorical node sets, never temporal.
+        if(s && s.is_list) return false;
+        // Otherwise sniff values: require all sampled non-null values to be Dates
+        // or date-parseable strings that aren't plain numbers (which Date would
+        // happily read as ms-since-epoch).
+        const data = this.list_major_data;
+        if(!data || data.length === 0) return false;
+        let checked = 0, ok = 0;
+        for(const row of data){
+            const v = row[x];
+            if(v == null) continue;
+            checked++;
+            if(v instanceof Date){ if(!isNaN(v.getTime())) ok++; }
+            else if(typeof v === 'string' && !/^-?\d+(\.\d+)?$/.test(v.trim()) && !isNaN(Date.parse(v))) ok++;
+            if(checked >= 5) break;
+        }
+        return checked > 0 && ok === checked;
     }
 
     /**
