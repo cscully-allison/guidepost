@@ -66,7 +66,21 @@ export const Y_VARIABLE_OFFSET = 0;
 
 export const num_rows = 50;
 export const num_cols = 150;
-export const MAX_CATEGORICAL_COLUMNS = 150;   // cap on columns for a categorical/list x; the rest of the (less-frequent) tail is dropped
+export const MAX_CATEGORICAL_COLUMNS = 150;   // cap on columns for a *scalar* categorical x (e.g. JOB_NAME) with no groupable structure; the less-frequent tail is dropped
+
+// Grouping constants for a list-valued (HPC node) x axis. Instead of dropping
+// the tail past MAX_CATEGORICAL_COLUMNS, every node is retained and the x axis
+// is rendered as a hierarchy of groups (cabinet > chassis > ...). The full fleet
+// is always shown as a compact overview strip; brushing it zooms the detail
+// heatmap into a node-index range (Overview + Detail navigation).
+export const RENDER_NODE_BUDGET = 220;   // max columns rendered at once: the detail view picks the deepest hierarchy level whose group count fits this within the brushed range
+export const CHUNK_TARGET_COLS = 120;    // when node names lack a hierarchy (seriation fallback), retain all by chunking the ordered nodes into ~this many synthetic groups
+
+// Overview strip (the persistent full-fleet "distribution map" with a brush that
+// drives the detail heatmap's zoom range).
+export const OVERVIEW_STRIP_HEIGHT = 34;   // px height of the heat band
+export const OVERVIEW_STRIP_MARGIN = 14;   // gap above the strip (below the co-occurrence arcs)
+export const OVERVIEW_BRUSH_MIN_PX = 6;    // ignore degenerate brushes narrower than this
 
 // Maximum number of facet panels rendered for a "Group By" column. When the
 // grouping column has more distinct values, only the MAX_FACETS largest groups
@@ -93,6 +107,10 @@ export const RIBBON_COLOR = 'rgb(176, 64, 140)';
 // Interaction-mode toggle icons (cell-pin / column-pin / 2D-brush).
 export const ICON_ACCENT = '#b8a9d9';   // light, low-saturation purple (active element)
 export const ICON_MUTED = '#cfcfcf';    // neutral grey (inactive elements)
+
+// Sharedness strip base color (neutral grey so the co-occurrence ramp toward
+// RIBBON_COLOR reads clearly against it).
+export const SHAREDNESS_BASE = '#d0d0d0';
 
 // COLORS
 export const BLUE = 'rgba(32, 61, 192, 0.7)';

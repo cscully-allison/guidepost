@@ -8,7 +8,7 @@ import json
 import os
 import sys
 from .utils import validate_and_clean_dataframe, extract_summary_statistics
-from .seriation import compute_category_seriation
+from .seriation import compute_category_ordering
 from .aggregation import AggregationEngine
 
 class Guidepost(anywidget.AnyWidget):
@@ -115,14 +115,22 @@ class Guidepost(anywidget.AnyWidget):
 
         summary_stats = extract_summary_statistics(o_df, self._effective_list_columns)
 
-        # Seriation order + association-aware selection score for list columns,
-        # shipped on _summary_stats (same channel as is_list, so it survives
-        # config-UI rewrites). The frontend caps columns by `category_score` and
-        # orders the kept set by `category_order`.
-        seriation = compute_category_seriation(o_df, self._effective_list_columns)
-        for col, info in seriation.items():
-            if col in summary_stats:
-                summary_stats[col]["category_order"] = info["order"]
+        # Ordering for list columns, shipped on _summary_stats (same channel as
+        # is_list, so it survives config-UI rewrites). Structure-aware node-name
+        # layout is preferred (ships `category_hierarchy` + `category_levels` so
+        # the frontend can build an adaptive grouped overview and fisheye lens
+        # that retains every node); arbitrary categories fall back to spectral
+        # seriation (ships `category_score` for the column cap). Both share
+        # `category_order` for the kept/ordered sequence.
+        ordering = compute_category_ordering(o_df, self._effective_list_columns)
+        for col, info in ordering.items():
+            if col not in summary_stats:
+                continue
+            summary_stats[col]["category_order"] = info["order"]
+            if "hierarchy" in info:
+                summary_stats[col]["category_hierarchy"] = info["hierarchy"]
+                summary_stats[col]["category_levels"] = info["levels"]
+            if "score" in info:
                 summary_stats[col]["category_score"] = info["score"]
 
         self._summary_stats = summary_stats

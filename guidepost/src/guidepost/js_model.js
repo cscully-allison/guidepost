@@ -1,6 +1,6 @@
 import * as d3 from "d3";
 import { tableFromIPC, Type } from "apache-arrow";
-import { num_rows, num_cols, VALID_CONFIG_FIELDS, MAX_FACETS, MAX_CATEGORICAL_COLUMNS } from "./consts.js";
+import { num_rows, num_cols, VALID_CONFIG_FIELDS, MAX_FACETS, MAX_CATEGORICAL_COLUMNS, RENDER_NODE_BUDGET, CHUNK_TARGET_COLS } from "./consts.js";
 
 const MISSING_LABEL = "(missing)";
 
@@ -45,8 +45,28 @@ class JSModel{
         this.categorical_overflow = {};
         // Per-facet: list x has ≥1 multi-valued record (co-occurrence exists).
         this.faceted_has_sharing = {};
+        // Per-facet grouping model for a list x, built from the node-name
+        // hierarchy (cabinet > chassis > ...) or, when names lack a convention,
+        // a single level of fixed-size chunks over the seriation order. Drives
+        // the overview strip and the detail-zoom levels. Null for a scalar
+        // categorical x (which keeps the MAX_CATEGORICAL_COLUMNS cap).
+        this.faceted_groups = {};
+        // Per-facet ordered per-node row arrays (leaf granularity), retained so
+        // the detail view can resolve a group down to individual nodes without a
+        // rebuild. Parallel to faceted_groups[fac].node_order.
+        this.faceted_node_buckets = {};
         // Per-facet memo of co_occurrence_for results, reset on column rebuild.
         this._co_occurrence_cache = {};
+        // Per-facet memo of exact column cells, keyed by level:lo:hi. Cells are
+        // window-independent, so changing the detail zoom only selects cached
+        // entries. Reset whenever box metrics are recomputed (config/filter).
+        this._cell_cache = {};
+        // Per-facet memo of the whole-fleet overview-strip aggregate.
+        this._overview_agg_cache = {};
+        // Per-facet detail-view node-index window [lo,hi] (inclusive into
+        // faceted_groups[fac].node_order). null => whole fleet at the adaptive
+        // overview level. Driven by the overview-strip brush.
+        this.detail_range = {};
         // Heatmap interaction mode: 'column-pin' | 'cell-pin' | '2d-brush'.
         // Global (one mode across facets); works for every x-axis type.
         this.interaction_mode = 'column-pin';
@@ -757,6 +777,11 @@ class JSModel{
      * @param {Array} y_axis_thresholds - The thresholds that delinate individual rows in the final visualization
      */
     calculate_box_metrics(fac, x_axis_thresholds, y_axis_thresholds){
+        // Box metrics are being recomputed (initial build, config or filter
+        // change) — invalidate the column-cell + overview-aggregate memos so the
+        // detail view and overview strip reflect it.
+        this._cell_cache[fac] = {};
+        if(this._overview_agg_cache) delete this._overview_agg_cache[fac];
         let current_bins = this.faceted_bins[fac].column;
         // Pristine row arrays per x-bin, captured once after _build_axis('x').
         // Read-only here — apply the category filter into a per-call working
@@ -774,65 +799,70 @@ class JSModel{
                 ? source.filter(d => filter.includes(d[cat_var]))
                 : source;
 
-            // Get summary statistics for the entire column of data before it is split into rows
-            let temp_box_stats = this.get_summary_stats(filtered_bin, this.vars.y, col_indx);
-            temp_box_stats.threshold = x_axis_thresholds[bin];
-
-            // count of rows in this column after filter; replaces the prior
-            // column_values.length access pattern used by histogram.js so we no
-            // longer have to hand a row-array out the door.
-            temp_box_stats.count = filtered_bin.length;
-
-            // For a list x, the fraction of this node's jobs that also ran on
-            // ≥1 other node (i.e. whose node list has length > 1). Computed here
-            // while the raw rows are in hand; the heatmap's sharedness strip
-            // reads it. Undefined for scalar/continuous x.
-            if(this.x_is_list()){
-                let shared = 0;
-                for(let i = 0; i < filtered_bin.length; i++){
-                    const v = filtered_bin[i][this.vars.x];
-                    if(Array.isArray(v) && v.length > 1) shared++;
-                }
-                temp_box_stats.shared_fraction = filtered_bin.length > 0 ? shared / filtered_bin.length : 0;
-            }
-
-            const customBins = this.binValues(filtered_bin, y_axis_thresholds, d => d[this.vars.y]);
-
-            // Process each bin's summary statistics and update color scale range
-            temp_box_stats.bins = customBins.map((bin, index) => {
-                const stats = this.get_summary_stats(bin, this.vars.color);
-                // Drop the raw-row array (`stats.values = bin`) — at 1M rows
-                // it pinned ~133 row refs per cell × 7,500 cells ≈ all rows in
-                // nested form, defeating aggregation. Keep only what consumers
-                // actually need: count for emptiness/heights, indices for the
-                // brush-selection gp_idx round-trip.
-                stats.count = bin.length;
-                stats.indices = new Int32Array(bin.length);
-                for(let i = 0; i < bin.length; i++){
-                    stats.indices[i] = bin[i].gp_idx;
-                }
-                stats.std_ratio = stats.std / this.faceted_sum_stats[fac].color.std;
-                stats.threshold = y_axis_thresholds[index];
-                const agg_val = stats[this.vars.color_agg];
-                if (agg_val != null) {
-                    this.color_scale_range[0] = Math.min(this.color_scale_range[0], agg_val);
-                    this.color_scale_range[1] = Math.max(this.color_scale_range[1], agg_val);
-                }
-                return stats;
-            });
-
-            // Column-level Int32Array of gp_idx for the brush's x-only path —
-            // matches the per-cell indices arrays so update_subselected_data
-            // never touches raw row objects.
-            temp_box_stats.indices = new Int32Array(filtered_bin.length);
-            for(let i = 0; i < filtered_bin.length; i++){
-                temp_box_stats.indices[i] = filtered_bin[i].gp_idx;
-            }
-
-            this.faceted_bins[fac].column[bin] = temp_box_stats;
+            this.faceted_bins[fac].column[bin] = this._column_stats_from_rows(
+                fac, filtered_bin, x_axis_thresholds[bin], y_axis_thresholds,
+                { col_index: col_indx, update_color_range: true });
             col_indx += 1;
         }
 
+    }
+
+    /**
+     * Builds one heatmap column's stats object from its (already category-
+     * filtered) row array: per-column y summary + per-y-bin color aggregates
+     * (count, the active color_agg, std_ratio) + the gp_idx Int32Arrays the
+     * brush/pin selection round-trips on. Shared by the at-rest overview
+     * (calculate_box_metrics) and the detail view so a node column and a group
+     * column are computed identically. Set `update_color_range` only for the
+     * canonical overview pass so the legend domain is stable across detail zooms.
+     */
+    _column_stats_from_rows(fac, rows, threshold, y_axis_thresholds, opts = {}){
+        const { col_index, update_color_range = false } = opts;
+        const stats = this.get_summary_stats(rows, this.vars.y, col_index);
+        stats.threshold = threshold;
+        stats.count = rows.length;
+
+        // For a list x, the fraction of these jobs that also ran on ≥1 other
+        // node (node list length > 1) — drives the heatmap sharedness strip.
+        if(this.x_is_list()){
+            let shared = 0;
+            for(let i = 0; i < rows.length; i++){
+                const v = rows[i][this.vars.x];
+                if(Array.isArray(v) && v.length > 1) shared++;
+            }
+            stats.shared_fraction = rows.length > 0 ? shared / rows.length : 0;
+        }
+
+        const facColorStd = this.faceted_sum_stats[fac].color.std;
+        const customBins = this.binValues(rows, y_axis_thresholds, d => d[this.vars.y]);
+        stats.bins = customBins.map((bin, index) => {
+            const cell = this.get_summary_stats(bin, this.vars.color);
+            cell.count = bin.length;
+            cell.indices = new Int32Array(bin.length);
+            for(let i = 0; i < bin.length; i++){
+                cell.indices[i] = bin[i].gp_idx;
+            }
+            // facColorStd is 0 when the facet's color is constant; guard the
+            // divide so std_ratio is 0 (no deviation) rather than NaN.
+            cell.std_ratio = facColorStd ? cell.std / facColorStd : 0;
+            cell.threshold = y_axis_thresholds[index];
+            if(update_color_range){
+                const agg_val = cell[this.vars.color_agg];
+                // NaN != null is true, and Math.max(x, NaN) poisons the range to
+                // NaN — which the legend then renders as its bound. Skip non-finite.
+                if(agg_val != null && !Number.isNaN(agg_val)){
+                    this.color_scale_range[0] = Math.min(this.color_scale_range[0], agg_val);
+                    this.color_scale_range[1] = Math.max(this.color_scale_range[1], agg_val);
+                }
+            }
+            return cell;
+        });
+
+        stats.indices = new Int32Array(rows.length);
+        for(let i = 0; i < rows.length; i++){
+            stats.indices[i] = rows[i].gp_idx;
+        }
+        return stats;
     }
 
     /**
@@ -1060,10 +1090,23 @@ class JSModel{
             }
         }
 
-        // Selection metric: which categories earn a column. For a list x with a
-        // Python-computed category_score (frequency + peak association to a
-        // common node), select by that so a rare-but-strongly-coupled node is
-        // kept, not dropped for being infrequent. Otherwise rank by frequency.
+        // Co-occurrence precondition + cache reset for this facet's new columns.
+        this.faceted_has_sharing[fac] = is_list && any_multi;
+        this._co_occurrence_cache[fac] = {};
+        if(this._co_occurrence_fleet_cache) delete this._co_occurrence_fleet_cache[fac];
+        if(this._co_fleet_range_cache) delete this._co_fleet_range_cache[fac];
+
+        // A list x retains EVERY node: order all nodes (structural layout when
+        // available, else seriation), build a grouping model, and render an
+        // adaptive grouped overview rather than dropping the tail. A scalar
+        // categorical x has no groupable structure, so it keeps the legibility
+        // cap (drop the least-frequent tail past MAX_CATEGORICAL_COLUMNS).
+        if(is_list){
+            this._build_grouped_categorical(fac, buckets);
+            return;
+        }
+
+        // --- scalar categorical x: rank-and-cap (unchanged behavior) ---
         const score_of = this._selection_score_fn(buckets);
         const ranked = [...buckets.keys()].sort((a, b) => {
             const ds = score_of(b) - score_of(a);
@@ -1072,25 +1115,382 @@ class JSModel{
             if(df !== 0) return df;
             return a < b ? -1 : a > b ? 1 : 0;
         });
-
-        // Guard against high-cardinality columns (e.g. JOB_NAME) producing
-        // thousands of unreadable columns: keep the top MAX_CATEGORICAL_COLUMNS
-        // and drop the tail. Rows whose only x value is a dropped category fall
-        // out of x-binning, same as null-x rows.
         const total = ranked.length;
         const shown = total > MAX_CATEGORICAL_COLUMNS ? ranked.slice(0, MAX_CATEGORICAL_COLUMNS) : ranked;
         this.categorical_overflow[fac] = total > MAX_CATEGORICAL_COLUMNS ? { shown: shown.length, total } : null;
 
-        // Order the kept set: by the Python seriation sequence for a list x
-        // (co-occurring nodes adjacent), else keep the selection order.
-        const ordered = this._seriated_order(shown);
-        this.col_order[fac] = ordered;
-        this.x_axis_thresholds[fac] = ordered;
-        this.faceted_bins[fac].column = ordered.map(k => buckets.get(k));
+        this.col_order[fac] = shown;
+        this.x_axis_thresholds[fac] = shown;
+        this.faceted_bins[fac].column = shown.map(k => buckets.get(k));
+        this.faceted_groups[fac] = null;
+        this.faceted_node_buckets[fac] = null;
+    }
 
-        // Co-occurrence precondition + cache reset for this facet's new columns.
-        this.faceted_has_sharing[fac] = is_list && any_multi;
-        this._co_occurrence_cache[fac] = {};
+    /**
+     * Retains all nodes of a list x by building a grouping model and rendering
+     * one column per group at an adaptive overview level. Member rows are
+     * deduped by gp_idx when combined into a group so a multi-node job that
+     * touched several members of the same group is counted once.
+     */
+    _build_grouped_categorical(fac, buckets){
+        // Order every present node: structural layout (category_order) puts
+        // hardware-adjacent nodes together; seriation order does the same for
+        // co-occurrence when there's no naming convention.
+        const node_order = this._ordered_nodes([...buckets.keys()], buckets);
+        this.faceted_node_buckets[fac] = node_order.map(k => buckets.get(k));
+
+        const groups = this._build_group_model(fac, node_order);
+        this.faceted_groups[fac] = groups;
+        if(this._node_name_idx_cache) delete this._node_name_idx_cache[fac];
+        // New columns => any prior detail-zoom window is meaningless; reset to
+        // the whole-fleet overview.
+        if(this.detail_range) this.detail_range[fac] = null;
+        if(this._overview_agg_cache) delete this._overview_agg_cache[fac];
+
+        // Adaptive overview: deepest grouping level whose column count fits the
+        // render budget (most detail that stays legible). The detail heatmap
+        // zooms into ranges of this via the overview-strip brush.
+        const level = this._overview_level(groups);
+        const overview = level < 0
+            ? node_order.map(k => ({ key: k, label: k, lo: node_order.indexOf(k), hi: node_order.indexOf(k) }))
+            : groups.groups_by_level[level];
+
+        const keys = overview.map(g => g.key);
+        this.col_order[fac] = keys;
+        this.x_axis_thresholds[fac] = keys;
+        this.faceted_bins[fac].column = overview.map(g => this._group_rows(fac, g));
+        // No data dropped — clear any prior overflow note for this facet.
+        this.categorical_overflow[fac] = null;
+        // Remember which level the whole-fleet overview shows (the detail view
+        // collapses back to it when the zoom brush is cleared).
+        groups.overview_level = level;
+    }
+
+    /**
+     * Orders all present node keys. The Python-shipped category_order
+     * (structural hardware layout for node names, else co-occurrence seriation)
+     * leads; any keys absent from it (defensive — every node is normally in the
+     * order) follow, ranked by the same selection metric the cap used to use
+     * (category_score if shipped, else facet-local frequency) so the fallback
+     * ordering matches the prior rank-and-keep behavior. `buckets` is the
+     * per-key row arrays map.
+     */
+    _ordered_nodes(keys, buckets){
+        const stats = this.feature_summary_stats && this.feature_summary_stats[this.vars.x];
+        const order = stats && stats.category_order;
+        const cat_score = stats && stats.category_score;
+        const score_of = (k) => cat_score && cat_score[k] != null
+            ? cat_score[k]
+            : buckets.get(k).length;
+        const by_rank = (a, b) => {
+            const ds = score_of(b) - score_of(a);
+            if(ds !== 0) return ds;
+            const dfreq = buckets.get(b).length - buckets.get(a).length;
+            if(dfreq !== 0) return dfreq;
+            return a < b ? -1 : a > b ? 1 : 0;
+        };
+        if(!order || !order.length){
+            return keys.slice().sort(by_rank);
+        }
+        const pos = new Map(order.map((k, i) => [String(k), i]));
+        const present = new Set(keys.map(String));
+        const in_order = order.filter(k => present.has(String(k)));
+        const seen = new Set(in_order.map(String));
+        const rest = keys.filter(k => !seen.has(String(k))).sort(by_rank);
+        return in_order.concat(rest);
+    }
+
+    /**
+     * Builds the per-facet grouping model over the ordered node list. Uses the
+     * Python node-name hierarchy (cabinet > chassis > ...) when shipped; else
+     * synthesizes a single level of fixed-size chunks over the seriation order.
+     * Group member ranges are contiguous because node_order is the hierarchy's
+     * depth-first order (or the chunk order).
+     *
+     * Shape: { levels:[label...], node_order:[name...],
+     *          groups_by_level:[ [ {key,label,lo,hi} ], ... ] }
+     * where lo/hi are inclusive indices into node_order. The leaf level
+     * (individual nodes) is implicit in node_order.
+     */
+    _build_group_model(fac, node_order){
+        const stats = this.feature_summary_stats && this.feature_summary_stats[this.vars.x];
+        const hierarchy = stats && stats.category_hierarchy;
+        const levels = (stats && stats.category_levels) || [];
+
+        if(hierarchy && levels.length){
+            const groups_by_level = levels.map((label, L) => {
+                const runs = [];
+                let cur = null;
+                for(let i = 0; i < node_order.length; i++){
+                    const keys = hierarchy[node_order[i]];
+                    // keys is [g0,...,gL-1, leaf]; level L's key is keys[L].
+                    const gkey = (keys && keys[L] != null) ? keys[L] : node_order[i];
+                    if(cur && cur.key === gkey){
+                        cur.hi = i;
+                    } else {
+                        cur = { key: gkey, label: gkey, lo: i, hi: i };
+                        runs.push(cur);
+                    }
+                }
+                return runs;
+            });
+            return { levels, node_order, groups_by_level };
+        }
+
+        // Fallback: chunk the ordered nodes into ~CHUNK_TARGET_COLS groups so
+        // every node is retained even without a naming convention.
+        const n = node_order.length;
+        const chunk = Math.max(1, Math.ceil(n / CHUNK_TARGET_COLS));
+        const runs = [];
+        for(let lo = 0; lo < n; lo += chunk){
+            const hi = Math.min(lo + chunk - 1, n - 1);
+            const key = lo === hi
+                ? node_order[lo]
+                : `${node_order[lo]}…${node_order[hi]}`;
+            runs.push({ key, label: key, lo, hi });
+        }
+        return { levels: ['group'], node_order, groups_by_level: [runs] };
+    }
+
+    /**
+     * Deepest grouping level whose column count is within RENDER_NODE_BUDGET, so
+     * the at-rest overview shows the finest grouping that stays legible. Returns
+     * the level index, or -1 to mean "render individual nodes" (when even node
+     * granularity is within budget — small fleets need no grouping).
+     */
+    _overview_level(groups){
+        if(groups.node_order.length <= RENDER_NODE_BUDGET) return -1;
+        const lv = groups.groups_by_level;
+        for(let L = lv.length - 1; L >= 0; L--){
+            if(lv[L].length <= RENDER_NODE_BUDGET) return L;
+        }
+        return 0; // even the coarsest level overflows; the render budget bounds the work
+    }
+
+    /**
+     * The deduped (by gp_idx) union of a group's member-node row arrays. Dedup
+     * matters because a multi-node job appears in every member node's bucket;
+     * the group should count it once.
+     */
+    _group_rows(fac, group){
+        const node_buckets = this.faceted_node_buckets[fac];
+        if(group.lo === group.hi) return node_buckets[group.lo];
+        const seen = new Set();
+        const out = [];
+        for(let i = group.lo; i <= group.hi; i++){
+            const rows = node_buckets[i];
+            for(let r = 0; r < rows.length; r++){
+                // Identity is the production gp_idx; fall back to list_major's
+                // per-row `index` so dict-major test fixtures (which lack gp_idx)
+                // still dedupe a multi-node job touching two members correctly.
+                const row = rows[r];
+                const gid = row.gp_idx != null ? row.gp_idx : row.index;
+                if(seen.has(gid)) continue;
+                seen.add(gid);
+                out.push(row);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Exact, lazily-memoized column stats for a node/group descriptor
+     * {key, lo, hi, level}. Cells depend only on the descriptor (not the zoom),
+     * so each is computed once (via the shared _column_stats_from_rows path over
+     * deduped member rows) and cached by level:lo:hi — changing the detail window
+     * only re-selects precomputed columns.
+     */
+    _frontier_cells(fac, frontier_col){
+        const cache = this._cell_cache[fac] || (this._cell_cache[fac] = {});
+        const ck = `${frontier_col.level}:${frontier_col.lo}:${frontier_col.hi}`;
+        if(cache[ck]) return cache[ck];
+        const rows = (frontier_col.lo === frontier_col.hi
+            ? this.faceted_node_buckets[fac][frontier_col.lo]
+            : this._group_rows(fac, frontier_col)) || [];
+        // Honor an active category filter so the detail matches the overview.
+        const has_filter = this.faceted_states[fac].filter.length > 0;
+        const cat_var = this.vars.categorical;
+        const filtered = has_filter ? rows.filter(d => this.faceted_states[fac].filter.includes(d[cat_var])) : rows;
+        cache[ck] = this._column_stats_from_rows(
+            fac, filtered, frontier_col.key, this.y_axis_thresholds[fac], { update_color_range: false });
+        return cache[ck];
+    }
+
+    /**
+     * The deepest grouping level whose groups intersecting the node-index range
+     * [lo,hi] number <= RENDER_NODE_BUDGET, i.e. the finest detail that stays
+     * legible for that window. Returns the level index, or -1 to mean "render
+     * individual nodes" (the range is small enough). Mirrors _overview_level but
+     * scoped to a sub-range.
+     */
+    _detail_level(groups, lo, hi){
+        if((hi - lo + 1) <= RENDER_NODE_BUDGET) return -1;
+        const lv = groups.groups_by_level;
+        for(let L = lv.length - 1; L >= 0; L--){
+            let n = 0;
+            for(const g of lv[L]) if(g.lo <= hi && g.hi >= lo) n++;
+            if(n <= RENDER_NODE_BUDGET) return L;
+        }
+        return 0; // even the coarsest level overflows the window; budget bounds render work
+    }
+
+    /**
+     * Render-ready columns for the detail heatmap zoomed to the node-index range
+     * [lo,hi]. Picks the deepest level fitting the budget within the range and
+     * emits one column per group/node, each CLIPPED to the range (a group
+     * straddling the range edge is trimmed). Stats come from the shared, exact,
+     * memoized _frontier_cells path. Columns carry {lo,hi,level,label} so pins
+     * and co-occurrence projection resolve against them; the band scale owns
+     * x/width (uniform, no distortion).
+     */
+    compute_detail_columns(fac, lo, hi){
+        const groups = this.faceted_groups[fac];
+        if(!groups) return this.faceted_bins[fac].column;
+        const N = groups.node_order.length;
+        if(N === 0) return [];   // a facet whose x is entirely empty/null — no columns
+        lo = Math.max(0, Math.min(lo, N - 1));
+        hi = Math.max(lo, Math.min(hi, N - 1));
+
+        const level = this._detail_level(groups, lo, hi);
+        let descriptors;
+        if(level < 0){
+            descriptors = [];
+            for(let i = lo; i <= hi; i++){
+                descriptors.push({ key: groups.node_order[i], label: groups.node_order[i],
+                                   lo: i, hi: i, level: groups.groups_by_level.length });
+            }
+        } else {
+            descriptors = groups.groups_by_level[level]
+                .filter(g => g.lo <= hi && g.hi >= lo)
+                .map(g => {
+                    const clo = Math.max(g.lo, lo), chi = Math.min(g.hi, hi);
+                    return { key: g.key, label: g.label, lo: clo, hi: chi, level };
+                });
+        }
+        return descriptors.map(d => Object.assign({}, this._frontier_cells(fac, d),
+            { label: d.label, lo: d.lo, hi: d.hi, level: d.level }));
+    }
+
+    /**
+     * The columns currently displayed for a facet: the detail window when a
+     * grouped list x is zoomed (a brush range is set), else the static per-facet
+     * columns (whole-fleet overview / scalar categorical / continuous). Single
+     * source of truth shared by the heatmap render and selection resolution.
+     * Cheap to call repeatedly — _frontier_cells memoizes the per-column stats.
+     */
+    current_detail_columns(facet){
+        const groups = this.faceted_groups && this.faceted_groups[facet];
+        if(!groups) return this.faceted_bins[facet] ? this.faceted_bins[facet].column : [];
+        // Always build via compute_detail_columns so columns carry lo/hi/level
+        // (needed by co-occurrence projection + range-based pins) at every zoom —
+        // the full range yields exactly the at-rest overview, with those fields.
+        const N = groups.node_order.length;
+        const range = (this.detail_range && this.detail_range[facet]) || [0, N - 1];
+        return this.compute_detail_columns(facet, range[0], range[1]);
+    }
+
+    /**
+     * Per-group aggregate for the overview strip (the persistent full-fleet
+     * "distribution map"). One entry per whole-fleet overview-level group:
+     * {key, lo, hi, shared_fraction, count}. Memoized; invalidated alongside the
+     * cell cache when box metrics are recomputed.
+     */
+    overview_aggregate(fac){
+        if(this._overview_agg_cache[fac]) return this._overview_agg_cache[fac];
+        const groups = this.faceted_groups[fac];
+        if(!groups){ this._overview_agg_cache[fac] = []; return []; }
+        const level = groups.overview_level;
+        const descriptors = level < 0
+            ? groups.node_order.map((n, i) => ({ key: n, lo: i, hi: i, level: groups.groups_by_level.length }))
+            : groups.groups_by_level[level].map(g => ({ key: g.key, lo: g.lo, hi: g.hi, level }));
+        const agg = descriptors.map(d => {
+            const cells = this._frontier_cells(fac, d);
+            return { key: d.key, lo: d.lo, hi: d.hi,
+                     shared_fraction: cells.shared_fraction || 0, count: cells.count };
+        });
+        this._overview_agg_cache[fac] = agg;
+        return agg;
+    }
+
+    /**
+     * Union of gp_idx for every node spanned by a node/group column,
+     * deduped — used when a group column is pinned/brushed so selecting a
+     * collapsed group selects all its jobs. Returns an Int32Array.
+     */
+    frontier_indices(fac, frontier_col){
+        return this._frontier_cells(fac, frontier_col).indices;
+    }
+
+    /** Map of node name -> node-order index for a facet (memoized), so a job's
+     *  node names can be projected onto the current detail/overview columns. */
+    _node_name_index(fac){
+        this._node_name_idx_cache = this._node_name_idx_cache || {};
+        if(this._node_name_idx_cache[fac]) return this._node_name_idx_cache[fac];
+        const order = (this.faceted_groups[fac] && this.faceted_groups[fac].node_order) || [];
+        const map = new Map(order.map((n, i) => [String(n), i]));
+        this._node_name_idx_cache[fac] = map;
+        return map;
+    }
+
+    /**
+     * Co-occurrence partners for a hovered node/group column, aggregated
+     * onto the CURRENT frontier columns (so a collapsed partner contributes to
+     * the group column it currently sits in). `hovered` and `frontier` are
+     * frontier column descriptors ({key, lo, hi}). Returns [{key, strength}]
+     * where strength = fraction of the hovered column's distinct jobs that also
+     * touched a node now represented by that partner column. [] when there's no
+     * sharing. This is the grouped-world analogue of co_occurrence_for.
+     */
+    co_occurrence_for_frontier(fac, hovered, frontier){
+        if(!this.x_has_co_occurrence(fac)) return [];
+        const node_buckets = this.faceted_node_buckets[fac];
+        if(!node_buckets) return [];
+
+        // Columns may be keyed by `key` (synthetic descriptors) or `threshold`
+        // (rendered detail/overview columns) — accept either.
+        const keyOf = (c) => c.key != null ? c.key : c.threshold;
+        const node_to_col = new Array(node_buckets.length);
+        for(const col of frontier){
+            for(let i = col.lo; i <= col.hi; i++) node_to_col[i] = keyOf(col);
+        }
+        const name_to_idx = this._node_name_index(fac);
+        const x = this.vars.x;
+        const hoveredKey = String(keyOf(hovered));
+        const hasRange = hovered.lo != null && hovered.hi != null;
+        const rows = hovered.lo === hovered.hi
+            ? node_buckets[hovered.lo]
+            : this._group_rows(fac, hovered);
+
+        const tally = new Map();
+        const seenJob = new Set();
+        let total = 0;
+        for(const row of rows){
+            const gid = row.gp_idx != null ? row.gp_idx : row.index;
+            if(seenJob.has(gid)) continue;
+            seenJob.add(gid);
+            total++;
+            const v = row[x];
+            if(!Array.isArray(v)) continue;
+            const partnerCols = new Set();
+            for(const item of v){
+                const idx = name_to_idx.get(String(item));
+                if(idx == null) continue;
+                // Exclude the source itself — every node within the hovered
+                // range, so a pinned region zoomed to sub-columns doesn't arc to
+                // its own members (fall back to the key match when no range).
+                if(hasRange ? (idx >= hovered.lo && idx <= hovered.hi)
+                            : String(node_to_col[idx]) === hoveredKey) continue;
+                const colKey = node_to_col[idx];
+                if(colKey == null) continue;
+                partnerCols.add(colKey);
+            }
+            for(const ck of partnerCols) tally.set(ck, (tally.get(ck) || 0) + 1);
+        }
+        if(total === 0) return [];
+        return [...tally.entries()]
+            .map(([key, c]) => ({ node: key, key, strength: c / total }))
+            .filter(d => d.strength > 1e-9)
+            .sort((a, b) => b.strength - a.strength || (a.key < b.key ? -1 : 1));
     }
 
     /** True when a list x has ≥1 multi-valued record in this facet — the
@@ -1144,6 +1544,109 @@ class JSModel{
             .sort((a, b) => b.strength - a.strength || (a.node < b.node ? -1 : 1));
         cache[key] = result;
         return result;
+    }
+
+    /**
+     * Like co_occurrence_for but window-INDEPENDENT and unrestricted: source
+     * rows come from the node's own bucket (always available, regardless of the
+     * detail zoom), and partners are NOT filtered to currently-shown columns.
+     * Returns every fleet partner [{node, strength}] so the overview strip can
+     * tick a node's co-occurring partners at their true full-fleet positions —
+     * including partners outside the brushed detail window (the "how distributed"
+     * signal). Memoized in a separate cache.
+     */
+    co_occurrence_fleet(fac, node){
+        if(!this.x_has_co_occurrence(fac)) return [];
+        this._co_occurrence_fleet_cache = this._co_occurrence_fleet_cache || {};
+        const cache = this._co_occurrence_fleet_cache[fac] || (this._co_occurrence_fleet_cache[fac] = {});
+        const key = String(node);
+        if(cache[key]) return cache[key];
+
+        const idx = this._node_name_index(fac).get(key);
+        const rows = idx != null && this.faceted_node_buckets[fac]
+            ? this.faceted_node_buckets[fac][idx]
+            : null;
+        if(!rows || rows.length === 0){ cache[key] = []; return cache[key]; }
+
+        const x = this.vars.x;
+        const present = this._node_name_index(fac);
+        const tally = new Map();
+        for(const row of rows){
+            const v = row[x];
+            if(!Array.isArray(v)) continue;
+            const seen = new Set();
+            for(const item of v){
+                if(item == null) continue;
+                const k = String(item);
+                if(k === key || seen.has(k)) continue;   // skip self + per-row dupes
+                seen.add(k);
+                if(!present.has(k)) continue;            // must map to a node index
+                tally.set(k, (tally.get(k) || 0) + 1);
+            }
+        }
+        const total = rows.length;
+        const eps = 1e-9;
+        const result = [...tally.entries()]
+            .map(([n, c]) => ({ node: n, strength: c / total }))
+            .filter(d => d.strength > eps)
+            .sort((a, b) => b.strength - a.strength || (a.node < b.node ? -1 : 1));
+        cache[key] = result;
+        return result;
+    }
+
+    /**
+     * Fleet co-occurrence for a node-index RANGE [lo,hi] (a single node when
+     * lo==hi, or a group's members) — partners [{node, strength}] over the whole
+     * fleet, window-independent, where strength = fraction of the range's
+     * distinct jobs that also touched that partner. Lets a pinned/hovered group
+     * OR node project its reach onto the overview strip even after it scrolls out
+     * of the detail window. Memoized by lo:hi.
+     */
+    co_occurrence_fleet_range(fac, lo, hi){
+        if(!this.x_has_co_occurrence(fac)) return [];
+        this._co_fleet_range_cache = this._co_fleet_range_cache || {};
+        const cache = this._co_fleet_range_cache[fac] || (this._co_fleet_range_cache[fac] = {});
+        const ck = `${lo}:${hi}`;
+        if(cache[ck]) return cache[ck];
+
+        const nb = this.faceted_node_buckets[fac];
+        const order = this.faceted_groups[fac] && this.faceted_groups[fac].node_order;
+        if(!nb || !order){ cache[ck] = []; return cache[ck]; }
+        const present = this._node_name_index(fac);
+        const members = new Set();
+        for(let i = lo; i <= hi; i++) members.add(String(order[i]));
+
+        const x = this.vars.x;
+        const tally = new Map();
+        const seenJob = new Set();
+        let total = 0;
+        for(let i = lo; i <= hi; i++){
+            const rows = nb[i];
+            if(!rows) continue;
+            for(const row of rows){
+                const gid = row.gp_idx != null ? row.gp_idx : row.index;
+                if(seenJob.has(gid)) continue;           // dedupe jobs across member nodes
+                seenJob.add(gid);
+                total++;
+                const v = row[x];
+                if(!Array.isArray(v)) continue;
+                const seen = new Set();
+                for(const item of v){
+                    const k = String(item);
+                    if(seen.has(k) || members.has(k)) continue;   // skip per-row dupes + within-range
+                    seen.add(k);
+                    if(!present.has(k)) continue;
+                    tally.set(k, (tally.get(k) || 0) + 1);
+                }
+            }
+        }
+        const eps = 1e-9;
+        const res = total === 0 ? [] : [...tally.entries()]
+            .map(([n, c]) => ({ node: n, strength: c / total }))
+            .filter(d => d.strength > eps)
+            .sort((a, b) => b.strength - a.strength || (a.node < b.node ? -1 : 1));
+        cache[ck] = res;
+        return res;
     }
 
     /**
@@ -1516,6 +2019,41 @@ class JSModel{
     }
 
     /**
+     * Sets a facet's selection to an explicit gp_idx set (already deduped by the
+     * caller). Used by cell-pin and the 2D box brush, which capture their
+     * record indices at action time so the selection persists across zoom even
+     * as the underlying columns change. `ids` is any iterable of gp_idx.
+     */
+    set_selection_indices(facet, ids, targets){
+        this.brushed_data[facet] = Int32Array.from(ids);
+        this._finalize_selection(targets || [], false);
+    }
+
+    /**
+     * Pin selection for a grouped list x: each pin is a node-index range
+     * {lo, hi} (captured when the column was clicked) rather than a key, so the
+     * selection is stable even after the pinned column collapses into a group or
+     * explodes into nodes. Selects the deduped union of every job touching a
+     * node in any pinned range.
+     */
+    set_pinned_ranges(facet, ranges, targets){
+        const node_buckets = this.faceted_node_buckets[facet] || [];
+        const ids = new Set();
+        for(const { lo, hi } of (ranges || [])){
+            for(let i = lo; i <= hi; i++){
+                const rows = node_buckets[i];
+                if(!rows) continue;
+                for(let r = 0; r < rows.length; r++){
+                    const row = rows[r];
+                    ids.add(row.gp_idx != null ? row.gp_idx : row.index);
+                }
+            }
+        }
+        this.brushed_data[facet] = Int32Array.from(ids);
+        this._finalize_selection(targets || [], false);
+    }
+
+    /**
      * Switches the heatmap interaction mode and clears any active selection so
      * modes don't silently compound. Re-renders all views (each heatmap's
      * apply_interaction_mode then reconciles its per-mode overlays/pins).
@@ -1541,7 +2079,10 @@ class JSModel{
      * selected_records + targets. Works for any x type.
      */
     set_pinned_cell_selection(facet, cellKeys, targets){
-        const cols = this.faceted_bins[facet] ? this.faceted_bins[facet].column : [];
+        // Resolve against the columns currently RENDERED (detail window when
+        // zoomed, else the overview), since the cell keys carry those columns'
+        // thresholds — reading faceted_bins would miss a zoomed-in node/group.
+        const cols = this.current_detail_columns(facet);
         const by_threshold = new Map(cols.map(c => [String(c.threshold), c]));
         const wanted = new Set(cellKeys || []);
         const ids = new Set();

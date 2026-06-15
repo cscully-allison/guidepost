@@ -3,10 +3,12 @@ const assert = require('assert');
 // JSModel is an ES module that pulls in d3; load it dynamically once for the suite.
 let JSModel;
 let MAX_CATEGORICAL_COLUMNS;
+let RENDER_NODE_BUDGET;
+let CHUNK_TARGET_COLS;
 
 before(async () => {
     ({ JSModel } = await import('../guidepost/src/guidepost/js_model.js'));
-    ({ MAX_CATEGORICAL_COLUMNS } = await import('../guidepost/src/guidepost/consts.js'));
+    ({ MAX_CATEGORICAL_COLUMNS, RENDER_NODE_BUDGET, CHUNK_TARGET_COLS } = await import('../guidepost/src/guidepost/consts.js'));
 });
 
 /**
@@ -571,6 +573,21 @@ describe('JSModel — categorical x axis', () => {
         assert.deepStrictEqual(cols.map(c => c.count), [3,2,1]);
     });
 
+    it('scalar: constant-color facet keeps std_ratio + the legend range finite (no NaN)', () => {
+        // All color values equal => facet color std is 0. std_ratio = std/0 must
+        // be guarded to 0, else a single NaN poisons color_scale_range[1] and the
+        // legend renders NaN with no intermediary ticks.
+        const data = { user:{0:'a',1:'b',2:'c'}, y:{0:1,1:2,2:3}, color:{0:5,1:5,2:5},
+            cat:{0:'r',1:'g',2:'b'}, fac:{0:'A',1:'A',2:'A'} };
+        const vars = { facet_by:'fac', x:'user', y:'y', color:'color', color_agg:'std_ratio', categorical:'cat' };
+        const m = new JSModel(data, vars, { user:{ semantic_type:'categorical' } }, makeAnywidgetStub());
+        for(const col of m.faceted_bins.A.column){
+            for(const cell of col.bins) assert.ok(!Number.isNaN(cell.std_ratio), 'std_ratio is finite');
+        }
+        assert.ok(Number.isFinite(m.color_scale_range[0]) && Number.isFinite(m.color_scale_range[1]),
+            'color_scale_range stays finite');
+    });
+
     it('scalar: no overflow flag when category count is under the cap', () => {
         const m = new JSModel(makeScalarCatFixture(), SCALAR_VARS, SCALAR_SS, makeAnywidgetStub());
         assert.strictEqual(m.categorical_overflow.A, null);
@@ -685,6 +702,12 @@ describe('JSModel — categorical x axis', () => {
         assert.strictEqual(m.faceted_bins.A.column.length > 0, true);   // A renders
         assert.strictEqual(m.faceted_bins.B.column.length, 0);          // B has no columns
         assert.deepStrictEqual([...m.row_major_counts.B], []);          // empty → views show "too few" message
+        // The heatmap's update_scales reads current_detail_columns for EVERY facet
+        // (to build the band domain) — an empty facet must return [] without
+        // throwing, else the render loop halts at it (regression: the facet after
+        // an empty one stopped rendering).
+        assert.deepStrictEqual(m.current_detail_columns('B'), []);
+        assert.deepStrictEqual(m.compute_detail_columns('B', 0, 0), []);
     });
 
     it('set_pinned_cell_selection unions + dedups pinned cells gp_idx', () => {
@@ -740,26 +763,97 @@ describe('JSModel — categorical x axis', () => {
         assert.deepStrictEqual(m.faceted_bins.A.column.map(c => c.threshold), ['n3','n2','n1']);
     });
 
-    it('list: a high-score rare node survives the cap over higher-frequency low-score nodes', () => {
-        const N = MAX_CATEGORICAL_COLUMNS;          // N f-nodes + 1 keep-node => over the cap
-        const nodes = {}, y = {}, color = {}, cat = {}, fac = {}, score = {};
-        let r = 0;
+    it('list: retains ALL nodes (no cap drop) when under the render budget', () => {
+        // A list x no longer drops the tail: every node is kept. With fewer
+        // nodes than RENDER_NODE_BUDGET the overview renders each individually.
+        const N = MAX_CATEGORICAL_COLUMNS + 1;       // 151 — would have been capped before
+        const nodes = {}, y = {}, color = {}, cat = {}, fac = {};
         for(let i = 0; i < N; i++){
-            const name = 'f' + String(i).padStart(4, '0');
-            score[name] = 0.1;
-            for(let k = 0; k < 2; k++){              // frequency 2 each (beats keep's 1)
-                nodes[r] = [name]; y[r] = 1; color[r] = 1; cat[r] = 'red'; fac[r] = 'A'; r++;
+            nodes[i] = ['n' + String(i).padStart(4, '0')];
+            y[i] = i % 10; color[i] = i % 5; cat[i] = 'red'; fac[i] = 'A';
+        }
+        const m = new JSModel({nodes, y, color, cat, fac}, LIST_VARS, LIST_SS, makeAnywidgetStub());
+        assert.ok(N <= RENDER_NODE_BUDGET, 'fixture stays under the render budget');
+        assert.strictEqual(m.faceted_bins.A.column.length, N);   // every node kept, none dropped
+        assert.strictEqual(m.categorical_overflow.A, null);      // no overflow note
+        assert.strictEqual(m.faceted_groups.A.node_order.length, N);
+    });
+
+    it('list: chunks a high-cardinality list into an adaptive grouped overview, retaining all', () => {
+        // More distinct nodes than the budget + no naming convention => the
+        // model chunks the seriation order into ~CHUNK_TARGET_COLS groups so no
+        // node is dropped, while the rendered column count stays legible.
+        const N = RENDER_NODE_BUDGET + 80;
+        const nodes = {}, y = {}, color = {}, cat = {}, fac = {};
+        for(let i = 0; i < N; i++){
+            nodes[i] = ['n' + String(i).padStart(4, '0')];
+            y[i] = i % 10; color[i] = i % 5; cat[i] = 'red'; fac[i] = 'A';
+        }
+        const m = new JSModel({nodes, y, color, cat, fac}, LIST_VARS, LIST_SS, makeAnywidgetStub());
+        const cols = m.faceted_bins.A.column;
+        assert.ok(cols.length <= RENDER_NODE_BUDGET, 'overview fits the render budget');
+        assert.ok(cols.length <= CHUNK_TARGET_COLS + 1, 'chunked to ~CHUNK_TARGET_COLS groups');
+        assert.strictEqual(m.categorical_overflow.A, null);            // nothing dropped
+        assert.strictEqual(m.faceted_groups.A.node_order.length, N);   // all nodes retained
+        // Single-node jobs: each job lands in exactly one group, so the grouped
+        // column counts sum to every job.
+        assert.strictEqual(cols.reduce((a, c) => a + c.count, 0), N);
+    });
+
+    it('list: a node-name hierarchy builds nested groups + a deepest-fitting overview', () => {
+        // Cray-XName-style nodes across 10 cabinets × 30 slots (one chassis each)
+        // => 300 nodes. The shipped hierarchy lets the overview collapse to the
+        // deepest level that fits the budget (here: cabinet/chassis, 10 cols).
+        const CABS = 10, SLOTS = 30;
+        const nodes = {}, y = {}, color = {}, cat = {}, fac = {}, hierarchy = {}, order = [];
+        let r = 0;
+        for(let c = 0; c < CABS; c++){
+            for(let s = 0; s < SLOTS; s++){
+                const cab = `x${1000 + c}`, chs = `${cab}c0`, slot = `${chs}s${s}`, blade = `${slot}b0`, leaf = `${blade}n0`;
+                hierarchy[leaf] = [cab, chs, slot, blade, leaf];
+                order.push(leaf);
+                nodes[r] = [leaf]; y[r] = r % 10; color[r] = r % 5; cat[r] = 'red'; fac[r] = 'A'; r++;
             }
         }
-        score['keep'] = 1.0;
-        nodes[r] = ['keep']; y[r] = 1; color[r] = 1; cat[r] = 'red'; fac[r] = 'A'; r++;  // frequency 1
-        const ss = { nodes: { semantic_type:'categorical', is_list:true, category_score: score } };
+        const ss = { nodes: { semantic_type:'categorical', is_list:true,
+            category_order: order, category_hierarchy: hierarchy,
+            category_levels: ['cabinet','chassis','slot','blade'] } };
         const m = new JSModel({nodes, y, color, cat, fac}, LIST_VARS, ss, makeAnywidgetStub());
 
-        const shown = m.faceted_bins.A.column.map(c => c.threshold);
-        assert.strictEqual(shown.length, MAX_CATEGORICAL_COLUMNS);
-        assert.ok(shown.includes('keep'), 'high-score rare node kept despite low frequency');
-        assert.deepStrictEqual(m.categorical_overflow.A, { shown: MAX_CATEGORICAL_COLUMNS, total: N + 1 });
+        const groups = m.faceted_groups.A;
+        assert.deepStrictEqual(groups.levels, ['cabinet','chassis','slot','blade']);
+        assert.strictEqual(groups.node_order.length, CABS * SLOTS);          // all nodes retained
+        assert.strictEqual(groups.groups_by_level[0].length, CABS);          // cabinet groups
+        // Cabinet groups are contiguous runs over node_order.
+        assert.deepStrictEqual(groups.groups_by_level[0].map(g => g.hi - g.lo + 1), Array(CABS).fill(SLOTS));
+        // Overview collapses to a level within budget; column count == that level's group count.
+        const cols = m.faceted_bins.A.column;
+        assert.ok(cols.length <= RENDER_NODE_BUDGET);
+        assert.strictEqual(m.categorical_overflow.A, null);
+        assert.strictEqual(cols.reduce((a, c) => a + c.count, 0), CABS * SLOTS);  // single-node jobs, one per group-member
+    });
+
+    it('list: group rows dedupe a multi-node job spanning two members of the same group', () => {
+        // Two nodes in the same cabinet; one job uses BOTH. The cabinet group
+        // must count that job once, not twice.
+        const nodes = {0:['x1000c0s0b0n0','x1000c0s1b0n0'], 1:['x1000c0s0b0n0'], 2:['x1000c0s1b0n0']};
+        const gp_idx = {0:10, 1:11, 2:12};
+        const y = {0:1,1:2,2:3}, color = {0:1,1:2,2:3}, cat = {0:'r',1:'g',2:'r'}, fac = {0:'A',1:'A',2:'A'};
+        const order = ['x1000c0s0b0n0','x1000c0s1b0n0'];
+        const hierarchy = {
+            'x1000c0s0b0n0': ['x1000','x1000c0','x1000c0s0','x1000c0s0b0','x1000c0s0b0n0'],
+            'x1000c0s1b0n0': ['x1000','x1000c0','x1000c0s1','x1000c0s1b0','x1000c0s1b0n0'],
+        };
+        const ss = { nodes: { semantic_type:'categorical', is_list:true,
+            category_order: order, category_hierarchy: hierarchy,
+            category_levels: ['cabinet','chassis','slot','blade'] } };
+        const m = new JSModel({gp_idx, nodes, y, color, cat, fac}, LIST_VARS, ss, makeAnywidgetStub());
+        // Only 2 nodes (< budget) => overview renders nodes individually, but we
+        // can exercise the group-row dedup directly via the cabinet group.
+        const cabinet = m.faceted_groups.A.groups_by_level[0][0];
+        const rows = m._group_rows('A', cabinet);
+        const ids = rows.map(r => r.gp_idx).sort((a,b)=>a-b);
+        assert.deepStrictEqual(ids, [10, 11, 12]);   // 3 distinct jobs, the shared one counted once
     });
 
     // A genuine pyarrow-produced List<Utf8> IPC stream (base64). The JS
@@ -777,5 +871,249 @@ describe('JSModel — categorical x axis', () => {
         assert.strictEqual(m.scale_types.A.x.categorical, true);
         assert.strictEqual(m.faceted_bins.A.column.length, 3);
         assert.strictEqual(m.row_major_counts.A.reduce((a,b)=>a+b,0), 4);
+    });
+});
+
+describe('JSModel — overview + detail', () => {
+    const VARS = { facet_by:'fac', x:'nodes', y:'y', color:'color', color_agg:'avg', categorical:'cat' };
+
+    // 16 cabinets × 2 chassis × 8 slots × 2 nodes = 512 nodes (> RENDER_NODE_BUDGET,
+    // so the axis must group) with a real Cray-XName-style hierarchy (blades hold
+    // 2 leaf nodes — genuine multi-level structure for the detail view to descend).
+    function makeFleet(){
+        const CABS = 16, CHAS = 2, SLOTS = 8, NODES = 2;
+        const nodes = {}, y = {}, color = {}, cat = {}, fac = {}, hierarchy = {}, order = [];
+        let r = 0;
+        for(let c = 0; c < CABS; c++){
+            for(let h = 0; h < CHAS; h++){
+                for(let s = 0; s < SLOTS; s++){
+                    for(let n = 0; n < NODES; n++){
+                        const cab = `x${1000+c}`, chs = `${cab}c${h}`, slot = `${chs}s${s}`, blade = `${slot}b0`, leaf = `${blade}n${n}`;
+                        hierarchy[leaf] = [cab, chs, slot, blade, leaf];
+                        order.push(leaf);
+                        nodes[r] = [leaf]; y[r] = r % 10; color[r] = r % 5; cat[r] = 'red'; fac[r] = 'A'; r++;
+                    }
+                }
+            }
+        }
+        const ss = { nodes: { semantic_type:'categorical', is_list:true,
+            category_order: order, category_hierarchy: hierarchy,
+            category_levels: ['cabinet','chassis','slot','blade'] } };
+        return { data: {nodes, y, color, cat, fac}, ss, N: CABS*CHAS*SLOTS*NODES };
+    }
+
+    function partitionsRange(cols, lo, hi){
+        let next = lo;
+        for(const c of cols){ if(c.lo !== next) return false; next = c.hi + 1; }
+        return next === hi + 1;
+    }
+
+    it('overview_aggregate: one entry per overview group, fractions in [0,1], counts sum to the fleet', () => {
+        const { data, ss, N } = makeFleet();
+        const m = new JSModel(data, VARS, ss, makeAnywidgetStub());
+        const g = m.faceted_groups.A;
+        const agg = m.overview_aggregate('A');
+        assert.strictEqual(agg.length, g.groups_by_level[g.overview_level].length);
+        assert.ok(agg.every(d => d.shared_fraction >= 0 && d.shared_fraction <= 1));
+        assert.strictEqual(agg.reduce((a, d) => a + d.count, 0), N);  // single-node jobs, partitioned
+    });
+
+    it('compute_detail_columns: a narrow range partitions exactly + fits the budget', () => {
+        const { data, ss } = makeFleet();
+        const m = new JSModel(data, VARS, ss, makeAnywidgetStub());
+        const lo = 40, hi = 180;
+        const cols = m.compute_detail_columns('A', lo, hi);
+        assert.ok(partitionsRange(cols, lo, hi), 'columns tile [lo,hi] contiguously');
+        assert.ok(cols.length <= RENDER_NODE_BUDGET);
+        assert.ok(cols.every(c => Array.isArray(c.bins) && c.bins.length > 0));
+    });
+
+    it('compute_detail_columns: a small range reaches individual-node resolution', () => {
+        const { data, ss } = makeFleet();
+        const m = new JSModel(data, VARS, ss, makeAnywidgetStub());
+        const lo = 10, hi = 25;                       // 16 nodes <= budget
+        const cols = m.compute_detail_columns('A', lo, hi);
+        assert.strictEqual(cols.length, hi - lo + 1);
+        assert.ok(cols.every(c => c.lo === c.hi), 'one column per node');
+    });
+
+    it('compute_detail_columns: the full range equals the at-rest overview', () => {
+        const { data, ss } = makeFleet();
+        const m = new JSModel(data, VARS, ss, makeAnywidgetStub());
+        const g = m.faceted_groups.A;
+        const cols = m.compute_detail_columns('A', 0, g.node_order.length - 1);
+        assert.strictEqual(cols.length, m.faceted_bins.A.column.length);
+    });
+
+
+    it('detail-column cells are memoized (same object on repeat)', () => {
+        const { data, ss } = makeFleet();
+        const m = new JSModel(data, VARS, ss, makeAnywidgetStub());
+        const desc = { key: 'x1000c0', lo: 0, hi: 31, level: 1 };
+        const c0 = m._frontier_cells('A', desc);
+        const c1 = m._frontier_cells('A', desc);
+        assert.strictEqual(c0, c1, 'cells cached by level:lo:hi');
+    });
+
+    it('set_pinned_ranges selects every job in a pinned group (stable across re-brush)', () => {
+        // gp_idx fixture: pin a 2-node range; selection = union of both nodes' jobs.
+        const gp_idx = {0:100, 1:101, 2:102, 3:103};
+        const nodes = {0:['x1000c0s0b0n0'], 1:['x1000c0s0b0n1'], 2:['x1000c0s0b0n0','x1000c0s0b0n1'], 3:['x1000c0s1b0n0']};
+        const y = {0:1,1:2,2:3,3:4}, color = {0:1,1:2,2:3,3:4}, cat = {0:'r',1:'g',2:'r',3:'g'}, fac = {0:'A',1:'A',2:'A',3:'A'};
+        const order = ['x1000c0s0b0n0','x1000c0s0b0n1','x1000c0s1b0n0'];
+        const hierarchy = {
+            'x1000c0s0b0n0': ['x1000','x1000c0','x1000c0s0','x1000c0s0b0','x1000c0s0b0n0'],
+            'x1000c0s0b0n1': ['x1000','x1000c0','x1000c0s0','x1000c0s0b0','x1000c0s0b0n1'],
+            'x1000c0s1b0n0': ['x1000','x1000c0','x1000c0s1','x1000c0s1b0','x1000c0s1b0n0'],
+        };
+        const ss = { nodes: { semantic_type:'categorical', is_list:true,
+            category_order: order, category_hierarchy: hierarchy,
+            category_levels: ['cabinet','chassis','slot','blade'] } };
+        const stub = makeAnywidgetStub();
+        const m = new JSModel({gp_idx, nodes, y, color, cat, fac}, VARS, ss, stub);
+        // Pin the blade b0 of slot s0 — node indices 0..1 — selects jobs 100,101,102.
+        m.set_pinned_ranges('A', [{ lo: 0, hi: 1 }], []);
+        const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        assert.deepStrictEqual(sel, [100, 101, 102]);   // multi-node job 102 counted once
+    });
+
+    it('co_occurrence_for_frontier projects partners onto their current frontier columns', () => {
+        // 3 nodes; a job on node 0 also touches node 2. With node 1 and node 2
+        // collapsed into one frontier group, node 0's partner lights up that group.
+        const nodes = {0:['x1000c0s0b0n0','x1000c0s2b0n0'], 1:['x1000c0s0b0n0'], 2:['x1000c0s1b0n0'], 3:['x1000c0s2b0n0']};
+        const gp_idx = {0:1, 1:2, 2:3, 3:4};
+        const y = {0:1,1:2,2:3,3:4}, color = {0:1,1:2,2:3,3:4}, cat = {0:'r',1:'g',2:'r',3:'g'}, fac = {0:'A',1:'A',2:'A',3:'A'};
+        const order = ['x1000c0s0b0n0','x1000c0s1b0n0','x1000c0s2b0n0'];
+        const mk = n => ['x1000', 'x1000c0', `x1000c0${n.slice(6,8)}`, n.slice(0,11), n];
+        const hierarchy = Object.fromEntries(order.map(n => [n, mk(n)]));
+        const ss = { nodes: { semantic_type:'categorical', is_list:true,
+            category_order: order, category_hierarchy: hierarchy,
+            category_levels: ['cabinet','chassis','slot','blade'] } };
+        const m = new JSModel({gp_idx, nodes, y, color, cat, fac}, VARS, ss, makeAnywidgetStub());
+        // Hovered = node 0 (its own column); partners aggregated onto a frontier
+        // where nodes 1 and 2 form one group column.
+        const hovered = { key: order[0], lo: 0, hi: 0, is_node: true };
+        const frontier = [ hovered, { key: 'grp12', lo: 1, hi: 2, is_node: false } ];
+        const res = m.co_occurrence_for_frontier('A', hovered, frontier);
+        // node 0's two jobs: job 1 touches node 2 (in grp12); job 2 touches only node 0.
+        // So 1 of node 0's 2 jobs co-occurs with grp12 => strength 0.5.
+        const byKey = Object.fromEntries(res.map(d => [d.key, d.strength]));
+        assert.ok(Math.abs(byKey['grp12'] - 0.5) < 1e-9);
+    });
+
+    it('co_occurrence_for_frontier works on threshold-keyed detail columns (arc regression)', () => {
+        // The rendered detail columns carry `threshold` (not `key`); the
+        // projection must still resolve partners, else hover draws no arcs/bars.
+        const { data, ss } = makeFleet();
+        const m = new JSModel(data, VARS, ss, makeAnywidgetStub());
+        // Force a multi-node job spanning two distant nodes so a partner exists.
+        // (makeFleet jobs are single-node, so build a tiny dedicated fixture.)
+        const nodes = {0:['x1000c0s0b0n0','x1000c0s4b0n0'], 1:['x1000c0s0b0n0'], 2:['x1000c0s4b0n0']};
+        const gp_idx = {0:1,1:2,2:3}, y={0:1,1:2,2:3}, color={0:1,1:2,2:3}, cat={0:'r',1:'g',2:'r'}, fac={0:'A',1:'A',2:'A'};
+        const order = ['x1000c0s0b0n0','x1000c0s4b0n0'];
+        const mk = n => ['x1000','x1000c0',n.slice(0,9),n.slice(0,11),n];
+        const hierarchy = Object.fromEntries(order.map(n => [n, mk(n)]));
+        const ss2 = { nodes: { semantic_type:'categorical', is_list:true,
+            category_order: order, category_hierarchy: hierarchy,
+            category_levels: ['cabinet','chassis','slot','blade'] } };
+        const m2 = new JSModel({gp_idx, nodes, y, color, cat, fac}, VARS, ss2, makeAnywidgetStub());
+        const cols = m2.current_detail_columns('A');           // threshold-keyed, no `key`
+        assert.ok(cols.every(c => c.key === undefined && c.threshold != null));
+        const hovered = cols.find(c => c.threshold === order[0]);
+        const res = m2.co_occurrence_for_frontier('A', hovered, cols);
+        const byKey = Object.fromEntries(res.map(d => [d.key, d.strength]));
+        // node 0's 2 jobs; 1 also touches the far node => strength 0.5 onto its column.
+        assert.ok(Math.abs(byKey[order[1]] - 0.5) < 1e-9, 'partner resolved on threshold-keyed columns');
+    });
+
+    it('co_occurrence_fleet returns partners regardless of the detail window (incl. out-of-range)', () => {
+        // node 0 (first) co-occurs with node 2 (last). Even after zooming the
+        // detail to node 0 only, the fleet co-occurrence still surfaces node 2.
+        const nodes = {0:['x1000c0s0b0n0','x1000c0s2b0n0'], 1:['x1000c0s0b0n0'], 2:['x1000c0s1b0n0'], 3:['x1000c0s2b0n0']};
+        const gp_idx = {0:1, 1:2, 2:3, 3:4};
+        const y = {0:1,1:2,2:3,3:4}, color = {0:1,1:2,2:3,3:4}, cat = {0:'r',1:'g',2:'r',3:'g'}, fac = {0:'A',1:'A',2:'A',3:'A'};
+        const order = ['x1000c0s0b0n0','x1000c0s1b0n0','x1000c0s2b0n0'];
+        const mk = n => ['x1000', 'x1000c0', `x1000c0${n.slice(6,8)}`, n.slice(0,11), n];
+        const hierarchy = Object.fromEntries(order.map(n => [n, mk(n)]));
+        const ss = { nodes: { semantic_type:'categorical', is_list:true,
+            category_order: order, category_hierarchy: hierarchy,
+            category_levels: ['cabinet','chassis','slot','blade'] } };
+        const m = new JSModel({gp_idx, nodes, y, color, cat, fac}, VARS, ss, makeAnywidgetStub());
+        m.detail_range.A = [0, 0];                       // zoom to just node 0
+        const fleet = m.co_occurrence_fleet('A', order[0]);
+        const byNode = Object.fromEntries(fleet.map(d => [d.node, d.strength]));
+        // node 0's partner (the out-of-window last node) still appears at strength 0.5.
+        assert.ok(Math.abs(byNode[order[2]] - 0.5) < 1e-9);
+    });
+
+    it('co_occurrence_fleet_range projects a group/range reach independent of the zoom', () => {
+        // A job on node 0 also touches node 2 (far). Pinning the blade [0,1] and
+        // zooming the detail elsewhere, the range reach still surfaces node 2.
+        const nodes = {0:['x1000c0s0b0n0','x1000c0s2b0n0'], 1:['x1000c0s0b0n1'], 2:['x1000c0s1b0n0'], 3:['x1000c0s2b0n0']};
+        const gp_idx = {0:1, 1:2, 2:3, 3:4};
+        const y = {0:1,1:2,2:3,3:4}, color = {0:1,1:2,2:3,3:4}, cat = {0:'r',1:'g',2:'r',3:'g'}, fac = {0:'A',1:'A',2:'A',3:'A'};
+        const order = ['x1000c0s0b0n0','x1000c0s0b0n1','x1000c0s1b0n0','x1000c0s2b0n0'];
+        const mk = n => ['x1000','x1000c0',`x1000c0${n.slice(6,8)}`,n.slice(0,11),n];
+        const hierarchy = Object.fromEntries(order.map(n => [n, mk(n)]));
+        const ss = { nodes: { semantic_type:'categorical', is_list:true,
+            category_order: order, category_hierarchy: hierarchy,
+            category_levels: ['cabinet','chassis','slot','blade'] } };
+        const m = new JSModel({gp_idx, nodes, y, color, cat, fac}, VARS, ss, makeAnywidgetStub());
+        m.detail_range.A = [2, 3];                       // zoomed away from the pinned blade
+        const reach = m.co_occurrence_fleet_range('A', 0, 1);   // pinned blade b0 (nodes 0,1)
+        const byNode = Object.fromEntries(reach.map(d => [d.node, d.strength]));
+        // The blade's 2 distinct jobs (on n0, n1); 1 of them touches node 'x1000c0s2b0n0'.
+        assert.ok(Math.abs(byNode['x1000c0s2b0n0'] - 0.5) < 1e-9);
+    });
+
+    it('co_occurrence_for_frontier on a range excludes the source region itself', () => {
+        // A 2-node blade [0,1]: one job spans its own two nodes (intra-region),
+        // another spans node 0 and a far node. Only the far node is a partner.
+        const nodes = {0:['x1000c0s0b0n0','x1000c0s0b0n1'], 1:['x1000c0s0b0n0','x1000c0s9b0n0'], 2:['x1000c0s0b0n1']};
+        const gp_idx = {0:1,1:2,2:3}, y={0:1,1:2,2:3}, color={0:1,1:2,2:3}, cat={0:'r',1:'g',2:'r'}, fac={0:'A',1:'A',2:'A'};
+        const order = ['x1000c0s0b0n0','x1000c0s0b0n1','x1000c0s9b0n0'];
+        const mk = n => ['x1000','x1000c0',n.slice(0,9),n.slice(0,11),n];
+        const hierarchy = Object.fromEntries(order.map(n => [n, mk(n)]));
+        const ss = { nodes: { semantic_type:'categorical', is_list:true,
+            category_order: order, category_hierarchy: hierarchy,
+            category_levels: ['cabinet','chassis','slot','blade'] } };
+        const m = new JSModel({gp_idx, nodes, y, color, cat, fac}, VARS, ss, makeAnywidgetStub());
+        const cols = m.current_detail_columns('A');
+        const farCol = cols.find(c => c.lo <= 2 && c.hi >= 2);   // column holding node 2
+        const res = m.co_occurrence_for_frontier('A', { key: 'blade', lo: 0, hi: 1 }, cols);
+        const keys = res.map(d => d.key);
+        // The intra-region partner (node 1, within [0,1]) is excluded; the far one is kept.
+        assert.ok(keys.includes(String(farCol.threshold)), 'far partner present');
+        assert.ok(!keys.includes('x1000c0s0b0n1'), 'no self-arc to a member node');
+    });
+
+    it('cell-pin selection resolves against the zoomed detail columns', () => {
+        // Zoom to node resolution, then pin a node-resolution cell; selection must
+        // resolve via the detail columns (faceted_bins holds the overview keys).
+        const { data, ss } = makeFleet();
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(data, VARS, ss, stub);
+        m.detail_range.A = [10, 12];                     // 3 nodes => node resolution
+        const cols = m.current_detail_columns('A');
+        assert.ok(cols.every(c => c.lo === c.hi));       // individual nodes
+        // Pin the first non-empty cell of the first detail column.
+        const col = cols[0];
+        const row = col.bins.findIndex(b => b.count > 0);
+        m.set_pinned_cell_selection('A', [`${col.threshold}|${row}`], []);
+        const sel = JSON.parse(stub._state['selected_records']);
+        assert.deepStrictEqual([...sel].sort((a,b)=>a-b),
+            [...col.bins[row].indices].sort((a,b)=>a-b));
+        assert.ok(sel.length > 0);
+    });
+
+    it('set_selection_indices sets the selection to an explicit (deduped) gp_idx set', () => {
+        // The path cell-pin + box-brush use on a grouped x: indices captured at
+        // action time drive the selection (so it persists across zoom).
+        const { data, ss } = makeFleet();
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(data, VARS, ss, stub);
+        m.set_selection_indices('A', new Set([5, 5, 9, 2]), []);   // dup 5 collapses
+        const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        assert.deepStrictEqual(sel, [2, 5, 9]);
     });
 });

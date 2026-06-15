@@ -17,6 +17,45 @@ imported lazily so the cost is only paid when a list column is present.
 
 import numpy as np
 
+from .node_layout import compute_node_layout
+
+
+def compute_category_ordering(o_df, list_columns):
+    """Dispatch ordering per list column: prefer structure-aware node-name
+    layout, fall back to spectral co-occurrence seriation.
+
+    Returns ``{col: info}`` where *info* is either the structured shape
+    ``{"order", "hierarchy", "levels"}`` (node names follow a hardware-layout
+    convention) or the seriation shape ``{"order", "score"}`` (arbitrary
+    categories). The frontend treats both uniformly via ``category_order`` and
+    branches on the presence of ``category_hierarchy``.
+    """
+    if not list_columns:
+        return {}
+
+    out = {}
+    fallback_cols = []
+    for col in list_columns:
+        if col not in o_df.columns:
+            continue
+        names = _distinct_node_names(o_df[col])
+        layout = compute_node_layout(names) if names else None
+        if layout is not None:
+            out[col] = layout
+        else:
+            fallback_cols.append(col)
+
+    if fallback_cols:
+        out.update(compute_category_seriation(o_df, fallback_cols))
+    return out
+
+
+def _distinct_node_names(series):
+    """Flatten a list-valued column's cells into the sorted distinct set of
+    stringified node names (matching the String(value) keys the JS model uses)."""
+    cells = [c for c in series.tolist() if isinstance(c, (list, tuple, np.ndarray))]
+    return sorted({str(item) for cell in cells for item in cell if item is not None})
+
 
 def compute_category_seriation(o_df, list_columns):
     """Returns {col: {"order": [node, ...], "score": {node: float}}} for each
