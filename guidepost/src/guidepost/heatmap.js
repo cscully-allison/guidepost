@@ -1,5 +1,5 @@
 import * as d3 from "https://esm.sh/d3@7";
-import { SHARED_X_SCALE, OVERVIEW_LAYOUT, num_rows, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, draw_width, MIN_BAR_WIDTH, draw_height, zoom_factor_h, zoom_factor_v, MAX_NODE_LABEL_CHARS, NODE_LABEL_BAND, COUNT_STRIP_HEIGHT, COUNT_STRIP_MARGIN, SHAREDNESS_STRIP_HEIGHT, SHAREDNESS_STRIP_MARGIN, OVERVIEW_STRIP_HEIGHT, OVERVIEW_STRIP_MARGIN, OVERVIEW_BRUSH_MIN_PX, RICH_BLUE, RICH_TAN, RIBBON_COLOR, ICON_ACCENT, ICON_MUTED, SHAREDNESS_BASE } from "./consts";
+import { SHARED_X_SCALE, OVERVIEW_LAYOUT, num_rows, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, draw_width, MIN_BAR_WIDTH, draw_height, zoom_factor_h, zoom_factor_v, MAX_NODE_LABEL_CHARS, NODE_LABEL_BAND, COUNT_STRIP_HEIGHT, COUNT_STRIP_MARGIN, SHAREDNESS_STRIP_HEIGHT, SHAREDNESS_STRIP_MARGIN, OVERVIEW_STRIP_HEIGHT, OVERVIEW_STRIP_MARGIN, OVERVIEW_BRUSH_MIN_PX, RICH_BLUE, RICH_TAN, RIBBON_COLOR, ICON_ACCENT, ICON_MUTED, SHAREDNESS_BASE, TOP_MARGIN, PIN_LABEL_BAND_HEIGHT } from "./consts";
 import { SmartScale } from "./smartscale";
 
 // Max height (px) of the co-occurrence arcs that bow below the sharedness strip.
@@ -132,8 +132,12 @@ class Heatmap{
         const self = this;
 
         let x_offset = X_VARIABLE_OFFSET + OVERVIEW_LAYOUT.outer_margin;
-        let y_offset = Y_VARIABLE_OFFSET + OVERVIEW_LAYOUT.outer_margin;
-        
+        // Shift the whole heatmap down by TOP_MARGIN to open the header +
+        // pin-label bands above the plot (bug 1.a). Everything inside `view`
+        // is view-relative, so it moves as a unit and stays row-aligned with
+        // the right histogram (which gets the same shift).
+        let y_offset = Y_VARIABLE_OFFSET + OVERVIEW_LAYOUT.outer_margin + TOP_MARGIN;
+
         let view = this.parent.append('g')
                     .attr('class', 'heatmap')
                     .attr('transform', (d, i)=>`translate(${x_offset},${y_offset})`)
@@ -182,7 +186,8 @@ class Heatmap{
             .attr('baseline', 'bottom')
             .attr('anchor', 'middle')
             .attr('x', (draw_width)/2)
-            .attr('y', OVERVIEW_LAYOUT.inner_padding - 18)
+            // Header band (above the reserved pin-label band) — see bug 1.a.
+            .attr('y', OVERVIEW_LAYOUT.inner_padding - TOP_MARGIN + 16)
             .style('font-size', '12pt')
             .style('font-weight', 'bold');
 
@@ -361,6 +366,27 @@ class Heatmap{
     }
 
     /**
+     * Compact number for x-axis tooltips: ~3 significant figures with a K/M/B/T
+     * suffix (e.g. 1234567 → "1.23M"). Keeps pinned/hover range labels short so
+     * they don't blow past the column or each other.
+     * @param {number} num - The number to abbreviate.
+     * @returns {string} - The abbreviated number.
+     */
+    abbreviate_number(num) {
+        const n = Number(num);
+        if (num == null || Number.isNaN(n)) return '';
+        const sign = n < 0 ? '-' : '';
+        const abs = Math.abs(n);
+        // 3 significant figures, trailing zeros/dot trimmed (1.20 → "1.2").
+        const sig = v => parseFloat(v.toPrecision(3)).toString();
+        const units = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'K']];
+        for (const [v, s] of units) {
+            if (abs >= v) return sign + sig(abs / v) + s;
+        }
+        return sign + sig(abs);
+    }
+
+    /**
      * Formats the output of Date.toUTCString() to remove the time.
      * @param {Date} date - The date to format.
      * @returns {string} - The formatted date string without the time.
@@ -414,18 +440,28 @@ class Heatmap{
             // so every rendered column carries lo/hi/level for co-occurrence
             // projection and range pins. Memoize per zoom range so the column
             // join, both strips, _col_center and the reach read one consistent set.
+            // Also key on the active category filter: filter_data_by_category
+            // reassigns faceted_states[fac].filter to a fresh array on every
+            // hover/leave/click and invalidates the model's _cell_cache, but the
+            // zoom range is unchanged — without the filter in the key this memo
+            // would return pre-filter columns and the heatmap would never reflect
+            // a categorical filter for a grouped list x.
             const range = (this.model.detail_range && this.model.detail_range[this.facet]) || null;
-            if(this._cols_cache && this._cols_range === range) return this._cols_cache;
+            const filter = this.model.faceted_states[this.facet].filter;
+            if(this._cols_cache && this._cols_range === range && this._cols_filter === filter) return this._cols_cache;
             this._cols_cache = this.model.current_detail_columns(this.facet);
             this._cols_range = range;
+            this._cols_filter = filter;
             return this._cols_cache;
         }
         return this.model.faceted_bins[this.facet].column;
     }
 
     /**
-     * Visible hover label for a column. Categorical shows the value name and its
-     * distinct-record count; continuous keeps the date / numeric-range formatting.
+     * Horizontal hover label for a column (full detail; shown for a single
+     * column at a time so width isn't a concern). Categorical shows the value
+     * name and its distinct-record count; datetime the formatted date;
+     * continuous the numeric range with K/M/B-abbreviated bounds.
      */
     column_label(data){
         if(this.x_is_band){
@@ -435,7 +471,27 @@ class Heatmap{
             return `${this.format_utc_date(new Date(data.threshold))} (Local: ${new Date(data.threshold).toLocaleDateString()})`;
         }
         const i = this.model.x_axis_thresholds[this.facet].indexOf(data.threshold);
-        return `Records for '${this.model.vars.x}' range: (${this.format_number_with_commas(Math.floor(data.threshold))} - ${this.format_number_with_commas(Math.floor(this.model.x_axis_thresholds[this.facet][i+1]))})`;
+        const hi = this.model.x_axis_thresholds[this.facet][i+1];
+        return `Records for '${this.model.vars.x}' range: (${this.abbreviate_number(data.threshold)} - ${this.abbreviate_number(hi)})`;
+    }
+
+    /**
+     * Compact rotated label for a PINNED column. Many columns can be pinned at
+     * once, so this stays short to avoid mutual occlusion (bug 1.b): a truncated
+     * value for categorical/list, the date for datetime, and the K/M/B range
+     * only (no "Records for…" prefix) for continuous.
+     */
+    pinned_label(data){
+        if(this.x_is_band){
+            const raw = String(data.threshold);
+            return raw.length > MAX_NODE_LABEL_CHARS ? raw.slice(0, MAX_NODE_LABEL_CHARS) + '…' : raw;
+        }
+        if(this.model.scale_types[this.facet].x.datetime){
+            return this.format_utc_date(new Date(data.threshold));
+        }
+        const i = this.model.x_axis_thresholds[this.facet].indexOf(data.threshold);
+        const hi = this.model.x_axis_thresholds[this.facet][i+1];
+        return `(${this.abbreviate_number(data.threshold)} - ${this.abbreviate_number(hi)})`;
     }
 
     /**
@@ -477,21 +533,31 @@ class Heatmap{
                         .attr('width', d => self.col_width(d.threshold))
                         .attr('fill', '#ffffff');
 
+                    // Pinned-column hover label. The rect+text live in an inner
+                    // <g> so a band x can rotate the whole label (backdrop incl.)
+                    // as a unit while _fit_text_bg still measures in the inner
+                    // unrotated space. set_text_field owns text/anchor/rotation
+                    // and the outer translate per x type (bug 1.a/1.b).
                     let date  = col.append('g')
                         .attr('class', 'text-field')
-                        .attr('transform', `translate(${0}, ${-20})`)
                         .style('visibility', (d)=> self._is_pinned(d) ? 'visible' : 'hidden');
-                        
-                    date.append('rect')
+
+                    let date_inner = date.append('g')
+                        .attr('class', 'text-field-inner');
+
+                    date_inner.append('rect')
                         .attr('class', 'text-bg')
                         .attr('height', 15)
                         .attr('width', 150)
                         .attr('fill', 'white');
-                        
-                    date.append('text')
-                        .attr('fill', 'black')
-                        .text((data)=> self.column_label(data))
-                        .attr('text-anchor', 'middle');
+
+                    date_inner.append('text')
+                        .attr('fill', 'black');
+
+                    // Only lay out labels that are actually visible (pinned) —
+                    // _fit_text_bg's getBBox forces layout, so skip the hidden
+                    // ones. Hover populates a label when it first appears.
+                    date.each(function(d){ if(self._is_pinned(d)) self.set_text_field(d3.select(this), d, true); });
 
                     col.each(
                         function (column){
@@ -550,11 +616,9 @@ class Heatmap{
                         }
                         if(!Object.keys(self.cached_bins).includes(String(d.threshold))){
                             let dt_text_selection = d3.select(e.target).select('.text-field');
-                            dt_text_selection.style('visibility', 'visible')
-                                .select('text')
-                                .text((data)=> self.column_label(data));
-
-                            self._fit_text_bg(dt_text_selection);
+                            dt_text_selection.style('visibility', 'visible');
+                            // Hover label: horizontal full detail (single column).
+                            self.set_text_field(dt_text_selection, d, false);
 
                             self.cached_bins['hover'] = d.bins
                         }
@@ -614,10 +678,15 @@ class Heatmap{
                         }
 
                         // Persist (or clear) the clicked column's label to match.
-                        const tf = d3.select(e.target).select('.text-field')
+                        // Use currentTarget (the column <g> the handler is bound
+                        // to), not e.target — click bubbles, so e.target is the
+                        // clicked .row cell rect, which has no .text-field child
+                        // and would make this a silent no-op (leaving the stale
+                        // horizontal hover label instead of the rotated pin).
+                        const tf = d3.select(e.currentTarget).select('.text-field')
                             .style('visibility', pinning ? 'visible' : 'hidden');
-                        tf.select('text').text(self.column_label(d));
-                        self._fit_text_bg(tf);
+                        // Pinning rotates + compacts the label; unpin hides it.
+                        self.set_text_field(tf, d, pinning);
 
                         // Right histogram reflects pinned (+ hover) columns; the
                         // selection + legend reflect the pinned node records.
@@ -646,8 +715,7 @@ class Heatmap{
 
                     update.select('.text-field')
                             .style('visibility', (d)=> self._is_pinned(d) ? 'visible' : 'hidden')
-                            .select('text')
-                            .text((d)=> self.column_label(d));
+                            .each(function(d){ if(self._is_pinned(d)) self.set_text_field(d3.select(this), d, true); });
 
                     //calling this as a .each so that we have access to
                     // column data for each row.
@@ -868,16 +936,51 @@ class Heatmap{
         note
             .text(`Showing top ${overflow.shown.toLocaleString()} of ${overflow.total.toLocaleString()} categories (by ${basis})`)
             .attr('x', draw_width / 2)
-            .attr('y', OVERVIEW_LAYOUT.inner_padding - 4)
+            // Bottom of the header band, just under the group title and clear of
+            // the pin-label band below (bug 1.a).
+            .attr('y', OVERVIEW_LAYOUT.inner_padding - PIN_LABEL_BAND_HEIGHT - 2)
             .attr('text-anchor', 'middle')
             .style('font-size', '9pt')
             .style('fill', '#a04040');
     }
 
     /**
+     * Writes a column's hover/pinned label: text, anchor, rotation, the outer
+     * `.text-field` translate, and the fitted backdrop. Single source of truth
+     * for the enter/hover/update/click render paths so none can overwrite the
+     * others with a stale form.
+     *
+     * The FORM depends on STATE, not x type:
+     *  - hover (`pinned` false): a full horizontal label (column_label). Only one
+     *    is shown at a time, so width/occlusion isn't a concern.
+     *  - pinned (`pinned` true): the compact pinned_label rotated -45° and
+     *    anchored at the column center, so many adjacent pinned labels fan out
+     *    instead of overlapping — for every x type, not just categorical (bug
+     *    1.b). The rotation rides on the inner <g> so text + backdrop stay
+     *    aligned and _fit_text_bg still measures in the unrotated space.
+     * @param {d3.Selection} tf - The column's `.text-field` <g> selection.
+     * @param {Object} data - The column datum.
+     * @param {boolean} pinned - Whether the label is being shown as a pin.
+     */
+    set_text_field(tf, data, pinned){
+        const inner = tf.select('.text-field-inner');
+        const txt = inner.select('text');
+        if(pinned){
+            txt.text(this.pinned_label(data)).attr('text-anchor', 'start');
+            inner.attr('transform', 'rotate(-45)');
+            tf.attr('transform', `translate(${this.col_width(data.threshold) / 2}, ${-6})`);
+        } else {
+            txt.text(this.column_label(data)).attr('text-anchor', 'middle');
+            inner.attr('transform', null);
+            tf.attr('transform', `translate(${0}, ${-8})`);
+        }
+        this._fit_text_bg(inner);
+    }
+
+    /**
      * Sizes a column's white `.text-bg` rect to exactly cover its label text
      * (plus a small margin) so the hover label stays readable over the heatmap
-     * cells behind it. `field` is the `.text-field` <g> selection.
+     * cells behind it. `field` is the `.text-field-inner` <g> selection.
      */
     _fit_text_bg(field){
         const text = field.select('text').node();
@@ -1520,7 +1623,8 @@ class Heatmap{
         const size = 24, gap = 6;
         const total = modes.length * size + (modes.length - 1) * gap;
         const x0 = draw_width - total;            // right-aligned within the plot
-        const y0 = OVERVIEW_LAYOUT.inner_padding - size - 6;
+        // Header band, top-right — clear of the pin-label band below (bug 1.a).
+        const y0 = OVERVIEW_LAYOUT.inner_padding - TOP_MARGIN + 2;
 
         let bar = this.view.select('.mode-bar');
         if(bar.empty()) bar = this.view.append('g').attr('class', 'mode-bar');

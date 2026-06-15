@@ -53,10 +53,22 @@ export const VIS_HEADER_HEIGHT = 30;
 export const HEADER_HEIGHT = 30;
 let bottom_padding = 20;
 
+// Reserved vertical space above each facet's plot area, split into two
+// non-overlapping bands so the header info no longer collides with the pinned-
+// column hover labels (bug 1.a):
+//   - HEADER_BAND: group title, "records selected for export", mode toggles
+//   - PIN_LABEL_BAND: pinned-column hover labels (rotated for narrow band x)
+// Every per-facet view group (heatmap, histograms, barchart, legend) is shifted
+// down by TOP_MARGIN as a unit, so row alignment is preserved and the axes/cells
+// (which key off OVERVIEW_LAYOUT.inner_padding) are untouched.
+export const HEADER_BAND_HEIGHT = 28;
+export const PIN_LABEL_BAND_HEIGHT = 34;
+export const TOP_MARGIN = HEADER_BAND_HEIGHT + PIN_LABEL_BAND_HEIGHT;
+
 export const FACET_LAYOUT = {
     bottom_padding: bottom_padding,
     outer_margin: 30,
-    height: OVERVIEW_LAYOUT.height + CAT_HISTOGRAM_LAYOUT.height + (2 * OVERVIEW_LAYOUT.outer_margin) + (2 * CAT_HISTOGRAM_LAYOUT.outer_margin) + bottom_padding
+    height: OVERVIEW_LAYOUT.height + CAT_HISTOGRAM_LAYOUT.height + (2 * OVERVIEW_LAYOUT.outer_margin) + (2 * CAT_HISTOGRAM_LAYOUT.outer_margin) + bottom_padding + TOP_MARGIN
 }
 
 export const FULL_SVG_WIDTH = OVERVIEW_LAYOUT.width + (2 * OVERVIEW_LAYOUT.outer_margin) + (VERT_HISTOGRAM_LAYOUT.width+(2*VERT_HISTOGRAM_LAYOUT.outer_margin)) + LEGEND_LAYOUT.width

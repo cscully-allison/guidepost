@@ -46,6 +46,21 @@ export default async () => {
         jsmodel: null
     };
   
+    // (Re)builds the configuration dropdowns. Removes any prior `.configs_grp`
+    // (tearing down its DOM + handlers — ConfigurationInterface registers no
+    // anywidget_model listeners, so nothing leaks) and constructs a fresh
+    // interface from the current jsmodel. Called on initial render and after a
+    // data swap so the dropdown OPTIONS track the new dataset's columns (the
+    // interface reads them from jsmodel.feature_summary_stats / list_major_data,
+    // which update_data has already refreshed by the time we call this).
+    function create_config_interface(model, jsmodel, svg){
+        svg.selectAll('.configs_grp').remove();
+        let config_grp = svg.append('g')
+                            .attr('class','configs_grp')
+                            .attr('transform', `translate(${0},${HEADER_HEIGHT})`);
+        return new ConfigurationInterface(model, jsmodel, config_grp);
+    }
+
     function create_views(model, svg){
         let running_view_height = 0;
         let max_width = FULL_SVG_WIDTH;
@@ -237,8 +252,42 @@ export default async () => {
             // a fresh reload if no model has been built yet.
             if(!extra_state.jsmodel) return;
             extra_state.svg.selectAll(".visualization_group").remove();
-            extra_state.jsmodel.update_data(model.get("_vis_data"));
+
+            const data = model.get("_vis_data");
+            const summary_stats = model.get("_summary_stats");
+
+            // Swapping to a frame whose columns no longer satisfy the current
+            // config (e.g. entirely different column names) would leave the old
+            // config referencing missing columns and crash the rebuild. Reset to
+            // smart defaults — but ONLY when the config is actually invalid, so
+            // reloading a same-schema frame (filtered rows, etc.) preserves the
+            // user's manual axis selections. reset_config adopts the new vars
+            // WITHOUT rebuilding against the still-loaded old frame; update_data
+            // below does the rebuild against the new one.
+            extra_state.validator.summary_stats = summary_stats;
+            let vis_configs = JSON.parse(model.get("_vis_configs"));
+            extra_state.validator.vis_configs = vis_configs;
+            const config_invalid = extra_state.validator.validate_vis_configs().length > 0;
+            if(config_invalid){
+                vis_configs = globals.load_smart_default_configs(summary_stats, data);
+                extra_state.jsmodel.reset_config(vis_configs);
+            }
+
+            extra_state.jsmodel.update_data(data, summary_stats);
             create_views(extra_state.jsmodel, extra_state.svg);
+            // Rebuild the dropdowns so their options track the new columns (the
+            // selected values still come from the now-updated config). Always —
+            // columns can change even when the prior config stays valid.
+            create_config_interface(model, extra_state.jsmodel, extra_state.svg);
+
+            // Persist regenerated defaults so Python `vis_configs` and the config
+            // dropdowns reflect them. Done after the rebuild so the synchronous
+            // change:_vis_configs this fires diffs to zero (reset_config already
+            // synced _applied_vars) and stays a cheap no-op re-render.
+            if(config_invalid){
+                model.set("_vis_configs", JSON.stringify(vis_configs));
+                model.save_changes();
+            }
         })
 
         return () => {
@@ -304,11 +353,7 @@ export default async () => {
             reload_vis(model, extra_state.svg, extra_state.validator, jsmodel);
         }
 
-        let config_grp = extra_state.svg.append('g')
-                        .attr('class','configs_grp')
-                        .attr('transform', `translate(${0},${HEADER_HEIGHT})`);
-
-        let config_interface = new ConfigurationInterface(model, jsmodel, config_grp);
+        create_config_interface(model, jsmodel, extra_state.svg);
 
         return () => {
         // Optional: Called when the view is destroyed.

@@ -29,93 +29,15 @@ class JSModel{
             Object.entries(feature_summary_stats).sort((a, b) => a[0].localeCompare(b[0]))
         );
         this.feature_summary_stats = feature_summary_stats;
+        // View registry (token -> View instance). Persists across reloads;
+        // create_views overwrites entries by token on rebuild.
         this.views = {};
-        this.color_scale_range = [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];
         this.log_values_floor = 1;
-        this.y_axis_thresholds = {};
-        this.x_axis_thresholds = {};
-        // Per-facet ordered list of categorical x values (node/category names),
-        // matching faceted_bins[fac].column order. For a list x this is the
-        // Python seriation sequence (co-occurring nodes adjacent); otherwise
-        // selection/frequency order.
-        this.col_order = {};
-        // Per-facet {shown, total} when a categorical x has more categories than
-        // MAX_CATEGORICAL_COLUMNS and the tail was dropped; null otherwise. The
-        // heatmap reads this to render a "showing top N of M" note.
-        this.categorical_overflow = {};
-        // Per-facet: list x has ≥1 multi-valued record (co-occurrence exists).
-        this.faceted_has_sharing = {};
-        // Per-facet grouping model for a list x, built from the node-name
-        // hierarchy (cabinet > chassis > ...) or, when names lack a convention,
-        // a single level of fixed-size chunks over the seriation order. Drives
-        // the overview strip and the detail-zoom levels. Null for a scalar
-        // categorical x (which keeps the MAX_CATEGORICAL_COLUMNS cap).
-        this.faceted_groups = {};
-        // Per-facet ordered per-node row arrays (leaf granularity), retained so
-        // the detail view can resolve a group down to individual nodes without a
-        // rebuild. Parallel to faceted_groups[fac].node_order.
-        this.faceted_node_buckets = {};
-        // Per-facet memo of co_occurrence_for results, reset on column rebuild.
-        this._co_occurrence_cache = {};
-        // Per-facet memo of exact column cells, keyed by level:lo:hi. Cells are
-        // window-independent, so changing the detail zoom only selects cached
-        // entries. Reset whenever box metrics are recomputed (config/filter).
-        this._cell_cache = {};
-        // Per-facet memo of the whole-fleet overview-strip aggregate.
-        this._overview_agg_cache = {};
-        // Per-facet detail-view node-index window [lo,hi] (inclusive into
-        // faceted_groups[fac].node_order). null => whole fleet at the adaptive
-        // overview level. Driven by the overview-strip brush.
-        this.detail_range = {};
         // Heatmap interaction mode: 'column-pin' | 'cell-pin' | '2d-brush'.
-        // Global (one mode across facets); works for every x-axis type.
+        // Global (one mode across facets); works for every x-axis type. Unlike
+        // the per-facet derived state, it is intentionally preserved on reload.
         this.interaction_mode = 'column-pin';
-        this.scale_types = {};
-
-        this.faceted_states = {};
-        this.brushed_ranges = {};
-        this.brushed_data = {};
-        // Selection is the per-facet UNION of three independent streams:
-        //   box   — the 2-d brush + the x/y histograms (one coordinated box)
-        //   pin   — column-pin / cell-pin
-        //   color — the color-legend brush
-        // brushed_data[facet] is the deduped union (what the legend count and the
-        // selected_records export read); clearing one stream leaves the others.
-        this.sel = { box: {}, pin: {}, color: {} };
-        for(let facet of this.facets){
-            this.brushed_ranges[facet] = {
-                x_range: [],
-                y_range: [],
-                col_range: [],     // band-x column restriction for the box (node/col index range)
-                color_range: []
-            }
-            this.brushed_data[facet] = [];
-            this.sel.box[facet] = new Int32Array(0);
-            this.sel.pin[facet] = new Int32Array(0);
-            this.sel.color[facet] = new Int32Array(0);
-            this.faceted_states[facet] = {
-                filter: [],
-                pinned_category: {}
-            };
-        }
-
         this.valid_config_fields = VALID_CONFIG_FIELDS;
-
-        //faceted derived data
-        this.faceted_sum_stats = {};
-        this.faceted_bins = {};
-
-        // Original (unfiltered) row arrays per x-bin per facet. Holds row
-        // references only (no deep copies). Used as the pristine source when
-        // filter_data_by_category or other downstream recomputes need to
-        // rebuild bin stats — replaces the old JSON-stringify snapshot.
-        this._original_column_values = {};
-
-        this.row_major_counts = {};
-        this.total_row_major_counts = {};
-
-        this.categorical_bins = {};
-        this.total_categorical_bins = {};
 
         this.x_axis_time_window_ticks = d3.utcWeek.every(1);
         this.x_axis_time_window = d3.utcDay.every(1);
@@ -127,17 +49,89 @@ class JSModel{
         // pipeline so behavior is preserved.
         this._pending_requests = new Map();
         this._next_request_id = 0;
-        // Per-facet monotonic counter for filter requests. A reply is only
-        // applied if its generation matches the latest dispatched on that
-        // facet — otherwise out-of-order async replies (e.g., mouseover
-        // followed by mouseleave) can leave the heatmap stuck in a stale
-        // filter state.
-        this._filter_seq = {};
         if(anywidget_model && typeof anywidget_model.on === 'function'){
             anywidget_model.on('msg:custom', (msg) => this._handle_python_message(msg));
         }
 
+        // All per-facet derived data + memo caches. Shared with update_data and
+        // apply_config so every (re)build starts from identical clean state.
+        this._reset_derived_state();
+
         this.sanitize_and_intialize_data(this.data);
+    }
+
+    /**
+     * (Re)initializes every per-facet derived map and memo cache to empty, then
+     * re-seeds the per-facet selection/brush entries for the current facets.
+     * Single source of truth shared by the constructor, update_data (full data
+     * reload) and apply_config's facet_by rebuild, so a reload yields the same
+     * clean state as a fresh construction — no stale entry (grouping model,
+     * cell cache, filter, selection) survives when a facet name recurs in a new
+     * dataset. Must run AFTER _compute_facets() so this.facets is current.
+     * Excludes state that intentionally persists across reloads (interaction
+     * mode, config vars, comm plumbing, the views registry).
+     */
+    _reset_derived_state(){
+        // Faceted derived data — rebuilt by sanitize_and_intialize_data.
+        this.faceted_sum_stats = {};
+        this.faceted_bins = {};
+        // Original (unfiltered) row arrays per x-bin per facet — row references
+        // only (no deep copies). Pristine source for filter/category recomputes.
+        this._original_column_values = {};
+        this.scale_types = {};
+        this.x_axis_thresholds = {};
+        this.y_axis_thresholds = {};
+        this.row_major_counts = {};
+        this.total_row_major_counts = {};
+        this.categorical_bins = {};
+        this.total_categorical_bins = {};
+        // Assigned ONLY on the categorical/list-x build path — cleared here so a
+        // prior list-x grouping can't leak into a new continuous-x dataset of a
+        // recurring facet (which would misroute current_columns to the grouped
+        // detail path). col_order matches faceted_bins[fac].column order;
+        // categorical_overflow drives the "showing top N of M" note;
+        // faceted_has_sharing flags co-occurrence; faceted_groups/node_buckets
+        // hold the list-x grouping model + leaf node rows.
+        this.col_order = {};
+        this.categorical_overflow = {};
+        this.faceted_has_sharing = {};
+        this.faceted_groups = {};
+        this.faceted_node_buckets = {};
+        // Per-facet detail-view node-index window [lo,hi]; null => whole fleet.
+        this.detail_range = {};
+        // Per-facet memo caches (keyed by facet name, and by level:lo:hi for
+        // cells/ranges). Stale entries would return wrong nodes on a swap.
+        this._co_occurrence_cache = {};
+        this._cell_cache = {};
+        this._overview_agg_cache = {};
+        this._co_occurrence_fleet_cache = {};
+        this._co_fleet_range_cache = {};
+        this._node_name_idx_cache = {};
+        // Per-facet monotonic filter-request generation (stale-reply guard).
+        this._filter_seq = {};
+        // Selection is the per-facet UNION of three independent streams:
+        //   box   — the 2-d brush + the x/y histograms (one coordinated box)
+        //   pin   — column-pin / cell-pin
+        //   color — the color-legend brush
+        // brushed_data[facet] is the deduped union (legend count + export read).
+        this.brushed_ranges = {};
+        this.brushed_data = {};
+        this.sel = { box: {}, pin: {}, color: {} };
+        this.faceted_states = {};
+        this.color_scale_range = [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];
+        for(const facet of this.facets){
+            this.brushed_ranges[facet] = {
+                x_range: [],
+                y_range: [],
+                col_range: [],     // band-x column restriction for the box (node/col index range)
+                color_range: []
+            };
+            this.brushed_data[facet] = [];
+            this.sel.box[facet] = new Int32Array(0);
+            this.sel.pin[facet] = new Int32Array(0);
+            this.sel.color[facet] = new Int32Array(0);
+            this.faceted_states[facet] = { filter: [], pinned_category: {} };
+        }
     }
 
     /**
@@ -2330,35 +2324,42 @@ class JSModel{
      * Updates the data for the model.
      * @param {Array} data - The new data to update.
      */
-    update_data(data){
+    update_data(data, feature_summary_stats){
+        // A dataset swap can change the columns entirely, so refresh the
+        // per-column summary stats that drive x-axis type detection (is_list,
+        // category_order, etc.). Sorted by key to match the constructor's
+        // predictable insertion order. Omitted (undefined) when the same frame
+        // is reloaded with new rows but identical columns.
+        if(feature_summary_stats){
+            this.feature_summary_stats = Object.fromEntries(
+                Object.entries(feature_summary_stats).sort((a, b) => a[0].localeCompare(b[0]))
+            );
+        }
         this.list_major_data = this._to_records(data);
         this._coerce_categorical_to_string(this.list_major_data, this.vars['categorical']);
         this.data = this.facet(this.list_major_data, this.vars['facet_by']);
         this._compute_facets();
-        // Reset per-facet state for the new dataset.
-        this._original_column_values = {};
-        this.faceted_bins = {};
-        this.faceted_sum_stats = {};
-        this.scale_types = {};
-        this.x_axis_thresholds = {};
-        this.y_axis_thresholds = {};
-        this.row_major_counts = {};
-        this.total_row_major_counts = {};
-        this.categorical_bins = {};
-        this.brushed_ranges = {};
-        this.brushed_data = {};
-        this.sel = { box: {}, pin: {}, color: {} };
-        this.faceted_states = {};
-        for(let facet of this.facets){
-            this.brushed_ranges[facet] = { x_range: [], y_range: [], col_range: [], color_range: [] };
-            this.brushed_data[facet] = [];
-            this.sel.box[facet] = new Int32Array(0);
-            this.sel.pin[facet] = new Int32Array(0);
-            this.sel.color[facet] = new Int32Array(0);
-            this.faceted_states[facet] = { filter: [], pinned_category: {} };
-        }
-        this.color_scale_range = [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];
+        // Reset ALL per-facet state + memo caches for the new dataset (shared
+        // with the constructor and apply_config so nothing stale survives a
+        // swap — e.g. a prior list-x grouping leaking into a new continuous x).
+        this._reset_derived_state();
         this.sanitize_and_intialize_data(this.data);
+    }
+
+    /**
+     * Adopt a new config without any rebuild. Used on a dataset swap whose new
+     * columns invalidate the old config: the caller assigns the regenerated
+     * smart-default vars here, then calls update_data() which rebuilds against
+     * the new frame using these vars. Going through apply_config instead would
+     * rebuild against the still-loaded old frame (which lacks the new columns)
+     * and throw. Keeping _applied_vars in sync means the subsequent
+     * change:_vis_configs (fired when the caller persists the trait) diffs to
+     * zero changes and stays a no-op.
+     * @param {Object} new_vars - The regenerated config object.
+     */
+    reset_config(new_vars){
+        this.vars = Object.assign({}, new_vars);
+        this._applied_vars = Object.assign({}, new_vars);
     }
 
     /**
@@ -2395,28 +2396,10 @@ class JSModel{
         if(changed.has('facet_by')){
             this.data = this.facet(this.list_major_data, this.vars['facet_by']);
             this._compute_facets();
-            this._original_column_values = {};
-            this.faceted_bins = {};
-            this.faceted_sum_stats = {};
-            this.scale_types = {};
-            this.x_axis_thresholds = {};
-            this.y_axis_thresholds = {};
-            this.row_major_counts = {};
-            this.total_row_major_counts = {};
-            this.categorical_bins = {};
-            this.brushed_ranges = {};
-            this.brushed_data = {};
-            this.sel = { box: {}, pin: {}, color: {} };
-            this.faceted_states = {};
-            for(const facet of this.facets){
-                this.brushed_ranges[facet] = { x_range: [], y_range: [], col_range: [], color_range: [] };
-                this.brushed_data[facet] = [];
-                this.sel.box[facet] = new Int32Array(0);
-                this.sel.pin[facet] = new Int32Array(0);
-                this.sel.color[facet] = new Int32Array(0);
-                this.faceted_states[facet] = { filter: [], pinned_category: {} };
-            }
-            this.color_scale_range = [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];
+            // New facet partitioning => every per-facet map + memo cache keyed by
+            // the old facet names is stale; reset them all (shared with the
+            // constructor / update_data) before rebuilding.
+            this._reset_derived_state();
             this.sanitize_and_intialize_data(this.data);
             return true;
         }

@@ -1,5 +1,5 @@
 import * as d3 from "https://esm.sh/d3@7";
-import { HISTOGRAM_LAYOUT, SHARED_X_SCALE, OVERVIEW_LAYOUT, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, VERT_HISTOGRAM_LAYOUT, num_rows, MIN_BAR_WIDTH, draw_width, TAN, draw_height} from "./consts";
+import { HISTOGRAM_LAYOUT, SHARED_X_SCALE, OVERVIEW_LAYOUT, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, VERT_HISTOGRAM_LAYOUT, num_rows, MIN_BAR_WIDTH, draw_width, TAN, draw_height, TOP_MARGIN} from "./consts";
 import {SmartScale} from "./smartscale"
 
 class Histogram{
@@ -31,7 +31,9 @@ class Histogram{
         if(this.orientation == 'bottom'){
 
             let x_offset = X_VARIABLE_OFFSET + HISTOGRAM_LAYOUT.outer_margin;
-            let y_offset = Y_VARIABLE_OFFSET + OVERVIEW_LAYOUT.height + HISTOGRAM_LAYOUT.outer_margin;
+            // + TOP_MARGIN keeps the bottom histogram flush under the heatmap
+            // plot, which was shifted down by the same amount (bug 1.a).
+            let y_offset = Y_VARIABLE_OFFSET + OVERVIEW_LAYOUT.height + HISTOGRAM_LAYOUT.outer_margin + TOP_MARGIN;
 
 
 
@@ -112,7 +114,9 @@ class Histogram{
         else if(this.orientation == 'right'){
 
             let x_offset = X_VARIABLE_OFFSET + OVERVIEW_LAYOUT.width - 5;
-            let y_offset = Y_VARIABLE_OFFSET + VERT_HISTOGRAM_LAYOUT.outer_margin;
+            // + TOP_MARGIN keeps the right histogram's rows aligned with the
+            // heatmap cell rows, which shifted down by the same amount (bug 1.a).
+            let y_offset = Y_VARIABLE_OFFSET + VERT_HISTOGRAM_LAYOUT.outer_margin + TOP_MARGIN;
 
             let v_hist = this.parent.append('g')
                 .attr('class', 'faceted-v-hist')

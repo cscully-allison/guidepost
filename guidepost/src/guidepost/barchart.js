@@ -1,5 +1,5 @@
 import * as d3 from "https://esm.sh/d3@7";
-import { CAT_HISTOGRAM_LAYOUT, OVERVIEW_LAYOUT, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, HISTOGRAM_LAYOUT, LIGHT_BLUE, DEEP_LIGHT_BLUE } from "./consts";
+import { CAT_HISTOGRAM_LAYOUT, OVERVIEW_LAYOUT, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, HISTOGRAM_LAYOUT, LIGHT_BLUE, DEEP_LIGHT_BLUE, TOP_MARGIN } from "./consts";
 
 class CategoricalBarChart{
     constructor(model, parent, facet, height, width, orientation) {
@@ -33,7 +33,7 @@ class CategoricalBarChart{
             //create the histograms
 
             let x_offset = X_VARIABLE_OFFSET + OVERVIEW_LAYOUT.width;
-            let y_offset = Y_VARIABLE_OFFSET + CAT_HISTOGRAM_LAYOUT.outer_margin + OVERVIEW_LAYOUT.height ;
+            let y_offset = Y_VARIABLE_OFFSET + CAT_HISTOGRAM_LAYOUT.outer_margin + OVERVIEW_LAYOUT.height + TOP_MARGIN;
 
             let h_hist = this.parent.append('g')
                     .attr('class', 'faceted-h-hist')
@@ -71,7 +71,7 @@ class CategoricalBarChart{
         else if(this.orientation == 'right'){
 
             let x_offset = X_VARIABLE_OFFSET + OVERVIEW_LAYOUT.width;
-            let y_offset = Y_VARIABLE_OFFSET + CAT_HISTOGRAM_LAYOUT.outer_margin + OVERVIEW_LAYOUT.height ;
+            let y_offset = Y_VARIABLE_OFFSET + CAT_HISTOGRAM_LAYOUT.outer_margin + OVERVIEW_LAYOUT.height + TOP_MARGIN;
 
             let v_hist = this.parent.append('g')
                 .attr('class', 'faceted-v-hist')
