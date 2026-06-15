@@ -21,12 +21,12 @@ class Heatmap{
         this.pinned_cols = [];          // column-pin mode: pinned column thresholds
         this.pinned_col_ranges = {};    // key -> {lo,hi} node-index range; pins persist by range across zoom
         this.pinned_cells = new Set();  // cell-pin (non-grouped x): "threshold|row" keys
-        this.brushed_cells = null;      // 2D-brush (non-grouped x): covered cell keys
-        // Grouped list x: cell-pin + box-brush are stored as node-index regions
-        // {lo,hi,row_lo,row_hi,indices} so their highlight + selection persist
-        // across zoom (the node range is absolute; indices are captured at action).
+        // Grouped list x: cell-pin is stored as node-index regions
+        // {lo,hi,row_lo,row_hi,indices} so its highlight + selection persist
+        // across zoom (the node range is absolute; indices captured at action).
+        // The 2-d box brush is now stored as the shared brushed_ranges
+        // (col_range/x_range × y_range), linked with the histograms.
         this.pinned_cell_regions = [];  // cell-pin: one region per pinned cell
-        this.brushed_region = null;     // 2D-brush: the brushed box region
         this.cell_brush = null;         // d3.brush instance (2D-brush mode)
         this.cached_bins = {};
 
@@ -43,10 +43,20 @@ class Heatmap{
     /**
      * Updates the scales for the heatmap based on the current data state defined by the model.
      */
+    /** Index of a column in current_columns() by threshold (memoized per render),
+     *  for the scalar-categorical box-brush highlight which has no lo/hi. */
+    _col_index(threshold){
+        if(!this._col_idx_map){
+            this._col_idx_map = new Map(this.current_columns().map((c, i) => [String(c.threshold), i]));
+        }
+        return this._col_idx_map.get(String(threshold));
+    }
+
     update_scales(){
         let sum_stats = this.model.faceted_sum_stats[this.facet];
         // Drop any cached detail-column set — the data/scales are being rebuilt.
         this._cols_cache = null;
+        this._col_idx_map = null;
 
         // Categorical x: a d3 band scale keyed by the column names (each column's
         // `.threshold` holds its category/node name). For a grouped list x the
@@ -206,6 +216,38 @@ class Heatmap{
         // works for any x type, independent of the numeric brush ranges below.
         if(self._cell_selected(col_data, row_num)){
             return self.highlighted_scale_color(col_data.bins[row_num][self.model.vars.color_agg]);
+        }
+
+        // Color-legend brush: highlight any cell whose color-agg value falls in
+        // the brushed color band. Independent of (OR-ed with) the x/y box brushes.
+        const color_range = self.model.brushed_ranges[self.facet].color_range;
+        if(color_range && color_range.length === 2){
+            const cv = col_data.bins[row_num][self.model.vars.color_agg];
+            if(cv != null && !Number.isNaN(cv) && cv >= color_range[0] && cv <= color_range[1]){
+                return self.highlighted_scale_color(cv);
+            }
+        }
+
+        // Box brush for a BAND x (2-d brush + right histogram, linked via the
+        // shared col_range/y_range): highlight cells whose column is in col_range
+        // (empty = all columns) AND whose row is in y_range (empty = all rows).
+        if(self.x_is_band){
+            const cr = self.model.brushed_ranges[self.facet].col_range;
+            const yr = self.model.brushed_ranges[self.facet].y_range;
+            if(cr.length === 2 || yr.length === 2){
+                let in_col = true;
+                if(cr.length === 2){
+                    if(col_data.lo != null) in_col = col_data.lo <= cr[1] && col_data.hi >= cr[0];
+                    else { const ci = self._col_index(col_data.threshold); in_col = ci != null && ci >= cr[0] && ci <= cr[1]; }
+                }
+                let in_row = true;
+                if(yr.length === 2){ const r = parseInt(row_num); in_row = r >= yr[1] && r < yr[0]; }
+                if(in_col && in_row){
+                    return self.highlighted_scale_color(col_data.bins[row_num][self.model.vars.color_agg]);
+                }
+            }
+            // A band x never uses the continuous x_range/y_range blocks below.
+            return self.scale_color(col_data.bins[row_num][self.model.vars.color_agg]);
         }
 
         //fill row if only y axis is brushed
@@ -1226,21 +1268,18 @@ class Heatmap{
 
     // ---- cell-pin ------------------------------------------------------------
 
-    /** True when (col_data, row_num) is in the current cell-pin or box-brush
-     *  selection. Grouped x matches by node-index region (persists across zoom);
-     *  other x types match by the "threshold|row" cell key. */
+    /** True when (col_data, row_num) is in the current CELL-PIN selection.
+     *  Grouped x matches by node-index region (persists across zoom); other x
+     *  types match by the "threshold|row" cell key. (The 2-d box brush is no
+     *  longer here — it highlights via the shared col_range/y_range box below.) */
     _cell_selected(col_data, row_num){
         const key = `${col_data.threshold}|${row_num}`;
         if(this.pinned_cells && this.pinned_cells.has(key)) return true;
-        if(this.brushed_cells && this.brushed_cells.has(key)) return true;
         if(col_data.lo != null){
             for(const r of this.pinned_cell_regions){
                 if(row_num >= r.row_lo && row_num <= r.row_hi
                     && col_data.lo <= r.hi && col_data.hi >= r.lo) return true;
             }
-            const br = this.brushed_region;
-            if(br && row_num >= br.row_lo && row_num <= br.row_hi
-                && col_data.lo <= br.hi && col_data.hi >= br.lo) return true;
         }
         return false;
     }
@@ -1322,7 +1361,9 @@ class Heatmap{
         const mode = this.model.interaction_mode;
         if(mode !== 'column-pin'){ this.pinned_cols = []; this.pinned_col_ranges = {}; }
         if(mode !== 'cell-pin'){ this.pinned_cells.clear(); this.pinned_cell_regions = []; this.clear_cell_hover(); }
-        if(mode !== '2d-brush'){ this.remove_cell_brush(); this.brushed_cells = null; this.brushed_region = null; }
+        // Leaving 2-d brush: remove the overlay only. The box (brushed_ranges)
+        // persists and stays reflected on the histograms (kept on mode switch).
+        if(mode !== '2d-brush'){ this.remove_cell_brush(); }
 
         // Pinned regions persist via pinned_col_ranges; the hover overlay is added
         // separately on mouseenter. (Empty pinned set => clears the overlay.)
@@ -1363,26 +1404,33 @@ class Heatmap{
         return (OVERVIEW_LAYOUT.height - 2 * OVERVIEW_LAYOUT.inner_padding) / nrows;
     }
 
-    /** Re-positions the box brush after a render. Grouped x reflects the brushed
-     *  node-index region (so the box re-appears at the zoomed location, or clears
-     *  when scrolled out of view); continuous x reflects the shared x/y ranges. */
+    /** Re-positions the box brush after a render from the SHARED brushed_ranges
+     *  (col_range × y_range for band x, x_range × y_range for continuous), so the
+     *  2-d brush stays linked with the histograms and re-appears at the zoomed
+     *  location. Programmatic move (sourceEvent null) → end handler ignores it. */
     reflect_cell_brush(){
         const g = this.view.select('.cell-brush');
         if(g.empty() || !this.cell_brush) return;
+        const ranges = this.model.brushed_ranges[this.facet];
 
         if(this.x_is_band){
-            const br = this.brushed_region;
+            const cr = ranges.col_range, yr = ranges.y_range;
             const cols = this.current_columns();
-            const covered = br ? cols.filter(c => c.lo != null && c.lo <= br.hi && c.hi >= br.lo) : [];
-            if(!covered.length){ g.call(this.cell_brush.move, null); return; }
+            // Columns covered by col_range (empty col_range => all columns, e.g. a
+            // y-only right-histogram brush spans the full x extent).
+            const covered = cr.length === 2
+                ? cols.filter(c => c.lo != null ? (c.lo <= cr[1] && c.hi >= cr[0])
+                                                : true)   // scalar: handled by index below
+                : cols;
+            const idxCovered = (cr.length === 2 && cols.length && cols[0].lo == null)
+                ? cols.filter((c, i) => i >= cr[0] && i <= cr[1])
+                : covered;
+            if(yr.length !== 2 || !idxCovered.length){ g.call(this.cell_brush.move, null); return; }
             const cw = this.col_width();
-            const px0 = Math.min(...covered.map(c => this.x_pos(c.threshold)));
-            const px1 = Math.max(...covered.map(c => this.x_pos(c.threshold))) + cw;
-            const cell_h = this._cell_row_height(cols);
-            const ys = [];
-            for(let r = br.row_lo; r <= br.row_hi; r++) ys.push(this.scale_y_blocks(r));
-            const py0 = Math.min(...ys), py1 = Math.max(...ys) + cell_h;
-            g.call(this.cell_brush.move, [[px0, py0], [px1, py1]]);
+            const px0 = Math.min(...idxCovered.map(c => this.x_pos(c.threshold)));
+            const px1 = Math.max(...idxCovered.map(c => this.x_pos(c.threshold))) + cw;
+            const py = [this.scale_y_blocks(yr[0]), this.scale_y_blocks(yr[1])];
+            g.call(this.cell_brush.move, [[px0, Math.min(...py)], [px1, Math.max(...py)]]);
             return;
         }
 
@@ -1402,74 +1450,51 @@ class Heatmap{
 
     remove_cell_brush(){ this.view.select('.cell-brush').remove(); this.cell_brush = null; }
 
-    /** Maps a brushed pixel rectangle to a record selection. Categorical x →
-     *  union of covered cells' indices (membership highlight); continuous x →
-     *  x-data + y-row ranges reusing the existing brush plumbing. */
+    /** Maps the brushed pixel rectangle to the SHARED box ranges and recomputes
+     *  the box stream. Band x → col_range (covered columns) × y_range; continuous
+     *  x → x_range × y_range. Both feed _apply_brush_selection so the 2-d brush is
+     *  one coordinated box with the histograms (which write the same ranges). */
     on_cell_brush_end(selection){
         const targets = this._linked_targets();
+        const ranges = this.model.brushed_ranges[this.facet];
         if(!selection){
-            this.brushed_cells = null;
-            this.brushed_region = null;
-            this.model.brushed_ranges[this.facet].x_range = [];
-            this.model.brushed_ranges[this.facet].y_range = [];
-            this.model.brushed_data[this.facet] = new Int32Array(0);
-            this.model._finalize_selection(targets, false);
-            this.refresh_cell_fills();
+            // Clear the whole box (both axes); pin + color streams untouched.
+            ranges.x_range = [];
+            ranges.col_range = [];
+            ranges.y_range = [];
+            this.model._apply_brush_selection(this.facet, targets, false);
             return;
         }
         const [[x0, y0], [x1, y1]] = selection;
+        const ra = this.scale_y_blocks.invert(y0);
+        const rb = this.scale_y_blocks.invert(y1);
+        const y_range = [Math.max(ra, rb), Math.min(ra, rb)];   // [hi, lo] descending rows
 
         if(this.x_is_band){
-            const cols = this.current_columns();   // detail window when zoomed
+            // Covered columns → a node-index range (grouped) or column-index range
+            // (scalar). The selection is recomputed from displayed cells in
+            // _apply_brush_selection (band path).
+            const cols = this.current_columns();
             const cw = this.col_width();
-            const cell_h = this._cell_row_height(cols);
-            const grouped = this._has_grouping();
-            const ids = new Set();
-            const keys = [];
-            let lo = Infinity, hi = -Infinity, row_lo = Infinity, row_hi = -Infinity;
-            for(const col of cols){
+            let lo = Infinity, hi = -Infinity;
+            for(let ci = 0; ci < cols.length; ci++){
+                const col = cols[ci];
                 const cx = this.x_pos(col.threshold);
                 if(cx + cw < x0 || cx > x1) continue;
-                for(let row = 0; row < col.bins.length; row++){
-                    const ry = this.scale_y_blocks(row);
-                    if(ry + cell_h < y0 || ry > y1) continue;
-                    const idx = col.bins[row].indices;
-                    for(let i = 0; i < idx.length; i++) ids.add(idx[i]);
-                    if(grouped && col.lo != null){
-                        lo = Math.min(lo, col.lo); hi = Math.max(hi, col.hi);
-                        row_lo = Math.min(row_lo, row); row_hi = Math.max(row_hi, row);
-                    } else {
-                        keys.push(`${col.threshold}|${row}`);
-                    }
-                }
+                if(col.lo != null){ lo = Math.min(lo, col.lo); hi = Math.max(hi, col.hi); }
+                else { lo = Math.min(lo, ci); hi = Math.max(hi, ci); }
             }
-            if(grouped && hi >= 0){
-                // Region (node range × y rows) so the box selection persists +
-                // re-highlights across zoom; indices captured for the selection.
-                this.brushed_region = { lo, hi, row_lo, row_hi, indices: Int32Array.from(ids) };
-                this.brushed_cells = null;
-                this.model.set_selection_indices(this.facet, ids, targets);
-            } else {
-                this.brushed_cells = new Set(keys);
-                this.brushed_region = null;
-                this.model.set_pinned_cell_selection(this.facet, keys, targets);
-            }
-            this.refresh_cell_fills();
+            ranges.x_range = [];
+            ranges.col_range = (lo !== Infinity) ? [lo, hi] : [];
+            ranges.y_range = y_range;
         } else {
-            // Continuous: invert pixels to x-data + y-row ranges, reuse the
-            // existing X+Y brush compute/highlight.
             const xa = this.scale_x.scale.invert(x0);
             const xb = this.scale_x.scale.invert(x1);
-            const x_lo = xa <= xb ? xa : xb;
-            const x_hi = xa <= xb ? xb : xa;
-            const ra = this.scale_y_blocks.invert(y0);
-            const rb = this.scale_y_blocks.invert(y1);
-            const hi = Math.max(ra, rb);   // y_range stored descending [high, low]
-            const lo = Math.min(ra, rb);
-            this.model.brushed_ranges[this.facet].x_range = [x_lo, x_hi];
-            this.model.brushed_ranges[this.facet].y_range = [hi, lo];
-            this.model._apply_brush_selection(this.facet, targets, false);
+            ranges.x_range = [Math.min(xa, xb), Math.max(xa, xb)];
+            ranges.col_range = [];
+            ranges.y_range = y_range;
         }
+        this.model._apply_brush_selection(this.facet, targets, false);
     }
 
     // ---- interaction-mode toggle buttons ------------------------------------

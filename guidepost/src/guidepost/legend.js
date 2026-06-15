@@ -18,7 +18,7 @@ class Legend {
 
         if(color_scale.domain().length > 2){
             this.ticks_scale = d3.scaleDiverging().domain(color_scale.domain().reverse()).range([0, this.bar_height/2, this.bar_height]);
-        } 
+        }
         else{
             if(color_scale.domain()[1] > 2){
                 this.ticks_scale = d3.scaleSymlog().domain([color_scale.domain()[0]+1, color_scale.domain()[1]].reverse()).range([0, this.bar_height]);
@@ -28,6 +28,16 @@ class Legend {
             }
         }
 
+        // Invertible value<->pixel scale for the color brush, matching the
+        // gradient orientation (top = max, bottom = min). ticks_scale is a symlog
+        // (invertible) for the sequential case; d3.scaleDiverging (std_ratio) has
+        // NO .invert, so build a dedicated symlog over [max, min] -> [0, bar_height].
+        const dom = color_scale.domain();
+        if(dom.length > 2){
+            this.brush_value_scale = d3.scaleSymlog().domain([dom[dom.length - 1], dom[0]]).range([0, this.bar_height]);
+        } else {
+            this.brush_value_scale = this.ticks_scale;
+        }
     }
 
     /**
@@ -71,7 +81,23 @@ class Legend {
             .attr('height', this.bar_height)
             .style('fill', 'url(#linear-gradient)')
             .attr('transform', `translate(${LEGEND_LAYOUT.width-LEGEND_LAYOUT.right_padding},${0})`);
-        
+
+        // Vertical brush over the gradient bar: selects records whose heatmap
+        // cell color-agg value falls in the brushed color band (for export +
+        // highlight). Appended into legend_grp with NO extra transform, so brush
+        // pixels equal the bar's local y == brush_value_scale.range().
+        const self = this;
+        const bx0 = LEGEND_LAYOUT.width - LEGEND_LAYOUT.right_padding;
+        const bx1 = bx0 + this.bar_width;
+        this.color_brush = d3.brushY()
+            .extent([[bx0, 0], [bx1, this.bar_height]])
+            // Ignore programmatic moves (sourceEvent null) so reflecting the
+            // current band onto the brush can't re-fire the selection loop.
+            .on('end', function(event){ if(!event.sourceEvent) return; self.on_color_brush_end(event.selection); });
+        this.brush_g = legend_grp.append('g')
+            .attr('class', 'color-brush')
+            .call(this.color_brush);
+
         let axis = legend_grp.append('g')
             .attr('class', 'right-axis');
 
@@ -124,12 +150,44 @@ class Legend {
 
 
     /**
+     * Color-brush end handler: maps the brushed pixel span to a color-value range
+     * (via the invertible brush_value_scale) and selects the records of displayed
+     * cells in that band. An empty/cleared brush clears the band + selection.
+     */
+    on_color_brush_end(selection){
+        const f = this.facet;
+        const targets = [`${f}_heatmap`, `${f}_bottom_histogram`, `${f}_right_histogram`, `${f}_legend`];
+        if(!selection){
+            this.model.select_by_color_range(f, null, null, targets);
+            return;
+        }
+        const [py0, py1] = selection;
+        const v_a = this.brush_value_scale.invert(py0);
+        const v_b = this.brush_value_scale.invert(py1);
+        this.model.select_by_color_range(f, v_a, v_b, targets);
+    }
+
+    /**
      * Renders the legend by updating the DOM elements based on the current data.
      */
     render(){
         this.legend_grp.selectAll('.text-number')
             .text(`${this.model.brushed_data[this.facet].length}`);
         this.flashText();
+
+        // Reflect the current color band onto the brush (programmatic move is
+        // ignored by the end handler, so no loop), so the brush survives renders
+        // triggered by other selections and clears when the band is cleared.
+        if(this.color_brush && this.brush_g){
+            const cr = this.model.brushed_ranges[this.facet].color_range;
+            if(cr && cr.length === 2){
+                const p_lo = this.brush_value_scale(cr[0]);
+                const p_hi = this.brush_value_scale(cr[1]);
+                this.brush_g.call(this.color_brush.move, [Math.min(p_lo, p_hi), Math.max(p_lo, p_hi)]);
+            } else {
+                this.brush_g.call(this.color_brush.move, null);
+            }
+        }
     }
 
 }

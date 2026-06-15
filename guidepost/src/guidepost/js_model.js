@@ -75,12 +75,24 @@ class JSModel{
         this.faceted_states = {};
         this.brushed_ranges = {};
         this.brushed_data = {};
+        // Selection is the per-facet UNION of three independent streams:
+        //   box   — the 2-d brush + the x/y histograms (one coordinated box)
+        //   pin   — column-pin / cell-pin
+        //   color — the color-legend brush
+        // brushed_data[facet] is the deduped union (what the legend count and the
+        // selected_records export read); clearing one stream leaves the others.
+        this.sel = { box: {}, pin: {}, color: {} };
         for(let facet of this.facets){
             this.brushed_ranges[facet] = {
                 x_range: [],
-                y_range: []
+                y_range: [],
+                col_range: [],     // band-x column restriction for the box (node/col index range)
+                color_range: []
             }
             this.brushed_data[facet] = [];
+            this.sel.box[facet] = new Int32Array(0);
+            this.sel.pin[facet] = new Int32Array(0);
+            this.sel.color[facet] = new Int32Array(0);
             this.faceted_states[facet] = {
                 filter: [],
                 pinned_category: {}
@@ -1901,43 +1913,34 @@ class JSModel{
      * continuous 2D box brush (which sets both ranges before calling this).
      */
     async _apply_brush_selection(facet, targets, no_render){
-        const has_x_brush = this.brushed_ranges[facet].x_range.length === 2;
-        const has_y_brush = this.brushed_ranges[facet].y_range.length === 2;
+        const ranges = this.brushed_ranges[facet];
+        const has_x_brush = ranges.x_range.length === 2;
+        const has_y_brush = ranges.y_range.length === 2;
+        const has_col_brush = ranges.col_range.length === 2;
         const cat_filter = this.faceted_states[facet] && this.faceted_states[facet].filter;
         const has_cat_filter = cat_filter && cat_filter.length > 0;
 
-        // Brush selection is gated by an ACTIVE brush range, not by the
-        // category filter alone. Filter narrows what's *inside* the brush
-        // window, but a filter without a brush yields zero selection — the
-        // legacy JS behavior the legend tooltip and `widget.selection`
-        // round-trip both depend on.
-        if(!has_x_brush && !has_y_brush){
-            this.brushed_data[facet] = new Int32Array(0);
+        let box_ids = new Int32Array(0);
+
+        if(this.x_is_categorical()){
+            // Band x (categorical / list): the box is (columns in col_range) ∩
+            // (rows in y_range), computed over the DISPLAYED cells so it stays
+            // correct when zoomed. col_range comes from the 2-d brush; a y-only
+            // brush (empty col_range) = all columns ∩ y rows — this is what links
+            // the right histogram and the 2-d brush via the shared y_range.
+            if(has_col_brush || has_y_brush){
+                box_ids = this._band_box_indices(facet);
+            }
         }
-        else {
-            // Python-backed brush: a single DuckDB query returns the gp_idx
-            // values for rows within the current x/y range AND active category
-            // filter. This avoids any reliance on JS-side bin.indices being
-            // up-to-date with the filter state.
+        else if(has_x_brush || has_y_brush){
+            // Continuous x: a single DuckDB query (or JS fallback) over the x/y
+            // data box (+ active category filter).
             let used_python = false;
             if(this._has_comm()){
                 try {
-                    // X is already in data space (numeric or Date). Y has to
-                    // be converted from row-index space first. Both get the
-                    // edge extension so brushes at the leftmost/bottommost
-                    // bin capture underflow rows (data points that JS's
-                    // log-sanitize put into bin 0 but Python's SQL would
-                    // otherwise exclude with `x >= threshold[0]`).
-                    // A categorical x has no numeric x-range to brush; send an
-                    // empty x_range so the SQL falls back to y (+ category) only.
-                    const x_extended = this.x_is_categorical()
-                        ? []
-                        : this._extend_brush_range_edges(
-                            facet, 'x', this.brushed_ranges[facet].x_range);
-                    const y_data = this._y_row_range_to_data(
-                        facet, this.brushed_ranges[facet].y_range);
-                    const y_extended = this._extend_brush_range_edges(
-                        facet, 'y', y_data);
+                    const x_extended = this._extend_brush_range_edges(facet, 'x', ranges.x_range);
+                    const y_data = this._y_row_range_to_data(facet, ranges.y_range);
+                    const y_extended = this._extend_brush_range_edges(facet, 'y', y_data);
                     const reply = await this._send_request('request_brush_indices', {
                         facet_by: this.vars.facet_by,
                         x: this.vars.x,
@@ -1949,9 +1952,7 @@ class JSModel{
                         category_filter: has_cat_filter ? cat_filter : null,
                     });
                     const indices = reply && reply.indices;
-                    this.brushed_data[facet] = Array.isArray(indices)
-                        ? Int32Array.from(indices)
-                        : new Int32Array(0);
+                    box_ids = Array.isArray(indices) ? Int32Array.from(indices) : new Int32Array(0);
                     used_python = true;
                 } catch(e){
                     if(e && e.message && !/comm channel unavailable/i.test(e.message)){
@@ -1960,11 +1961,47 @@ class JSModel{
                 }
             }
             if(!used_python){
-                this._compute_brushed_data_js(facet);
+                box_ids = this._compute_brushed_data_js(facet);
             }
         }
 
+        // The brush feeds the BOX stream; pin + color streams are untouched.
+        this.sel.box[facet] = box_ids;
+        this._recompute_facet_selection(facet);
         this._finalize_selection(targets, no_render);
+    }
+
+    /**
+     * Box selection for a band (categorical/list) x: the deduped gp_idx of
+     * displayed cells whose column is in col_range (empty = all columns) and
+     * whose row is in y_range (empty = all rows). Grouped columns carry
+     * lo/hi (node-index overlap); scalar columns are matched by array index.
+     */
+    _band_box_indices(facet){
+        const cols = this.current_detail_columns(facet) || [];
+        const cr = this.brushed_ranges[facet].col_range;
+        const yr = this.brushed_ranges[facet].y_range;
+        const has_col = cr.length === 2;
+        const has_y = yr.length === 2;
+        const ids = new Set();
+        for(let ci = 0; ci < cols.length; ci++){
+            const col = cols[ci];
+            if(!col || !col.bins) continue;
+            let in_col = !has_col;
+            if(has_col){
+                in_col = (col.lo != null)
+                    ? (col.lo <= cr[1] && col.hi >= cr[0])   // grouped: node-index overlap
+                    : (ci >= cr[0] && ci <= cr[1]);          // scalar: column-index range
+            }
+            if(!in_col) continue;
+            for(let row = 0; row < col.bins.length; row++){
+                if(has_y && !(row >= yr[1] && row < yr[0])) continue;   // y_range is [hi, lo] descending
+                const idx = col.bins[row].indices;
+                if(!idx) continue;
+                for(let i = 0; i < idx.length; i++) ids.add(idx[i]);
+            }
+        }
+        return Int32Array.from(ids);
     }
 
     /**
@@ -1998,6 +2035,33 @@ class JSModel{
         }
     }
 
+    /** Recomputes brushed_data[facet] as the deduped UNION of the box, pin and
+     *  color streams. Called whenever any one stream changes. */
+    _recompute_facet_selection(facet){
+        const ids = new Set();
+        for(const name of ['box', 'pin', 'color']){
+            const arr = this.sel[name][facet];
+            if(arr) for(let i = 0; i < arr.length; i++) ids.add(arr[i]);
+        }
+        this.brushed_data[facet] = Int32Array.from(ids);
+    }
+
+    /** Sets one selection stream (box|pin|color) for a facet, re-unions into
+     *  brushed_data, and syncs the export + renders targets. The other streams
+     *  are untouched (so clearing one stream leaves the others). */
+    _set_stream(facet, name, ids, targets){
+        this.sel[name][facet] = ids instanceof Int32Array ? ids : Int32Array.from(ids || []);
+        this._recompute_facet_selection(facet);
+        this._finalize_selection(targets || [], false);
+    }
+
+    /** Pin-stream selection (column-pin / cell-pin) from an explicit gp_idx set. */
+    set_pin_indices(facet, ids, targets){ this._set_stream(facet, 'pin', ids, targets); }
+    /** Color-stream selection (color-legend brush) from an explicit gp_idx set. */
+    set_color_indices(facet, ids, targets){ this._set_stream(facet, 'color', ids, targets); }
+    /** Box-stream selection (2-d brush + histograms) from an explicit gp_idx set. */
+    set_box_indices(facet, ids, targets){ this._set_stream(facet, 'box', ids, targets); }
+
     /**
      * Selection driven by pinned categorical columns (no x/y brush). Sets the
      * facet's brushed_data to the DEDUPED union of the pinned columns' gp_idx
@@ -2014,8 +2078,7 @@ class JSModel{
             if(!idx) continue;
             for(let i = 0; i < idx.length; i++) ids.add(idx[i]);
         }
-        this.brushed_data[facet] = Int32Array.from(ids);
-        this._finalize_selection(targets || [], false);
+        this.set_pin_indices(facet, ids, targets);
     }
 
     /**
@@ -2025,8 +2088,45 @@ class JSModel{
      * as the underlying columns change. `ids` is any iterable of gp_idx.
      */
     set_selection_indices(facet, ids, targets){
-        this.brushed_data[facet] = Int32Array.from(ids);
-        this._finalize_selection(targets || [], false);
+        // Now routes to the PIN stream — its remaining caller is the grouped
+        // cell-pin path (the 2-d box brush goes through the box stream).
+        this.set_pin_indices(facet, ids, targets);
+    }
+
+    /**
+     * Color-legend brush: selects every CURRENTLY-DISPLAYED cell whose color-agg
+     * value falls in [v_lo, v_hi] (inclusive), unioning their gp_idx (deduped)
+     * into the facet's selection for export, and stores the band on
+     * brushed_ranges[facet].color_range so the heatmap highlights matching cells
+     * and the legend can reflect the brush. A null range clears both. Independent
+     * of the interaction mode and the x/y histogram brushes (own range slot).
+     */
+    select_by_color_range(facet, v_lo, v_hi, targets){
+        if(v_lo == null || v_hi == null){
+            this.brushed_ranges[facet].color_range = [];
+            this.set_color_indices(facet, new Int32Array(0), targets);   // clear color stream only
+            return;
+        }
+        const lo = Math.min(v_lo, v_hi), hi = Math.max(v_lo, v_hi);
+        // Set the range BEFORE the re-render so manage_highlight sees it.
+        this.brushed_ranges[facet].color_range = [lo, hi];
+        const agg = this.vars.color_agg;
+        const ids = new Set();
+        for(const col of (this.current_detail_columns(facet) || [])){
+            const bins = col && col.bins;
+            if(!bins) continue;
+            for(const cell of bins){
+                if(!cell || !cell.count) continue;            // skip empty cells
+                const v = cell[agg];
+                if(v == null || Number.isNaN(v)) continue;
+                if(v >= lo && v <= hi){
+                    const idx = cell.indices;
+                    if(!idx) continue;
+                    for(let i = 0; i < idx.length; i++) ids.add(idx[i]);
+                }
+            }
+        }
+        this.set_color_indices(facet, ids, targets);
     }
 
     /**
@@ -2049,26 +2149,24 @@ class JSModel{
                 }
             }
         }
-        this.brushed_data[facet] = Int32Array.from(ids);
-        this._finalize_selection(targets || [], false);
+        this.set_pin_indices(facet, ids, targets);
     }
 
     /**
-     * Switches the heatmap interaction mode and clears any active selection so
-     * modes don't silently compound. Re-renders all views (each heatmap's
-     * apply_interaction_mode then reconciles its per-mode overlays/pins).
+     * Switches the heatmap interaction mode. Clears ONLY the pin stream (the
+     * mode-specific column/cell pins) — the box (2-d brush + histograms) and the
+     * color brush persist across mode switches, so changing how you interact with
+     * the heatmap doesn't wipe an existing spatial or color selection. Re-renders
+     * all views (each heatmap's apply_interaction_mode reconciles its overlays).
      */
     set_interaction_mode(mode){
         if(this.interaction_mode === mode) return;
         this.interaction_mode = mode;
         for(const fac of this.facets){
-            this.brushed_data[fac] = new Int32Array(0);
-            if(this.brushed_ranges[fac]){
-                this.brushed_ranges[fac].x_range = [];
-                this.brushed_ranges[fac].y_range = [];
-            }
+            this.sel.pin[fac] = new Int32Array(0);
+            this._recompute_facet_selection(fac);
         }
-        this._finalize_selection([], true);   // clear selected_records; render_all renders
+        this._finalize_selection([], true);   // re-sync selected_records (box+color kept)
         this.render_all();
     }
 
@@ -2096,8 +2194,7 @@ class JSModel{
             if(!idx) continue;
             for(let i = 0; i < idx.length; i++) ids.add(idx[i]);
         }
-        this.brushed_data[facet] = Int32Array.from(ids);
-        this._finalize_selection(targets || [], false);
+        this.set_pin_indices(facet, ids, targets);
     }
 
     /**
@@ -2221,12 +2318,12 @@ class JSModel{
         }
         // For a list x a job spans multiple columns, so the same gp_idx can be
         // collected more than once; dedupe so the selection count is honest
-        // (the Python brush path already applies DISTINCT).
+        // (the Python brush path already applies DISTINCT). Returns the box gp_idx
+        // (the caller assigns it to the box stream) rather than setting brushed_data.
         if(this.x_is_list() && flat.length > 0){
-            this.brushed_data[facet] = Int32Array.from(new Set(flat));
-        } else {
-            this.brushed_data[facet] = flat;
+            return Int32Array.from(new Set(flat));
         }
+        return flat;
     }
 
     /**
@@ -2250,10 +2347,14 @@ class JSModel{
         this.categorical_bins = {};
         this.brushed_ranges = {};
         this.brushed_data = {};
+        this.sel = { box: {}, pin: {}, color: {} };
         this.faceted_states = {};
         for(let facet of this.facets){
-            this.brushed_ranges[facet] = { x_range: [], y_range: [] };
+            this.brushed_ranges[facet] = { x_range: [], y_range: [], col_range: [], color_range: [] };
             this.brushed_data[facet] = [];
+            this.sel.box[facet] = new Int32Array(0);
+            this.sel.pin[facet] = new Int32Array(0);
+            this.sel.color[facet] = new Int32Array(0);
             this.faceted_states[facet] = { filter: [], pinned_category: {} };
         }
         this.color_scale_range = [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];
@@ -2305,10 +2406,14 @@ class JSModel{
             this.categorical_bins = {};
             this.brushed_ranges = {};
             this.brushed_data = {};
+            this.sel = { box: {}, pin: {}, color: {} };
             this.faceted_states = {};
             for(const facet of this.facets){
-                this.brushed_ranges[facet] = { x_range: [], y_range: [] };
+                this.brushed_ranges[facet] = { x_range: [], y_range: [], col_range: [], color_range: [] };
                 this.brushed_data[facet] = [];
+                this.sel.box[facet] = new Int32Array(0);
+                this.sel.pin[facet] = new Int32Array(0);
+                this.sel.color[facet] = new Int32Array(0);
                 this.faceted_states[facet] = { filter: [], pinned_category: {} };
             }
             this.color_scale_range = [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER];

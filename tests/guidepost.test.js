@@ -1117,3 +1117,199 @@ describe('JSModel — overview + detail', () => {
         assert.deepStrictEqual(sel, [2, 5, 9]);
     });
 });
+
+describe('JSModel — color-legend brush selection', () => {
+    // Three scalar columns a/b/c, each with a constant color so the cell color
+    // (avg) per column is predictable: a=1, b=5, c=9. y varied so cells span
+    // two y-bins, but color is constant within a column => any of its cells reads
+    // the column's color.
+    function fixture(){
+        return {
+            gp_idx: {0:10,1:11,2:12,3:13,4:14,5:15},
+            user:  {0:'a',1:'a',2:'b',3:'b',4:'c',5:'c'},
+            y:     {0:2,1:4,2:2,3:4,4:2,5:4},
+            color: {0:1,1:1,2:5,3:5,4:9,5:9},
+            cat:   {0:'r',1:'g',2:'b',3:'r',4:'g',5:'b'},
+            fac:   {0:'A',1:'A',2:'A',3:'A',4:'A',5:'A'},
+        };
+    }
+    const VARS = { facet_by:'fac', x:'user', y:'y', color:'color', color_agg:'avg', categorical:'cat' };
+    const SS = { user: { semantic_type:'categorical' } };
+
+    // Independently recompute the expected gp_idx union for cells whose avg is in
+    // [lo,hi], from the model's own displayed cells.
+    function expected(m, lo, hi){
+        const ids = new Set();
+        for(const col of m.current_detail_columns('A')){
+            for(const cell of col.bins){
+                if(!cell.count) continue;
+                const v = cell.avg;
+                if(v != null && !Number.isNaN(v) && v >= lo && v <= hi){
+                    for(const i of cell.indices) ids.add(i);
+                }
+            }
+        }
+        return [...ids].sort((a,b)=>a-b);
+    }
+
+    it('selects the gp_idx of cells whose color-agg is in the brushed band', () => {
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(fixture(), VARS, SS, stub);
+        m.select_by_color_range('A', 4, 6, []);                    // catches column b (avg 5)
+        assert.deepStrictEqual(m.brushed_ranges.A.color_range, [4, 6]);
+        const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        assert.deepStrictEqual(sel, expected(m, 4, 6));
+        assert.deepStrictEqual(sel, [12, 13]);                     // b's records
+    });
+
+    it('orders the band endpoints; a full band selects every record', () => {
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(fixture(), VARS, SS, stub);
+        m.select_by_color_range('A', 100, 0, []);                  // reversed → [0,100]
+        assert.deepStrictEqual(m.brushed_ranges.A.color_range, [0, 100]);
+        const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        assert.deepStrictEqual(sel, [10, 11, 12, 13, 14, 15]);
+    });
+
+    it('an empty-overlap band selects nothing', () => {
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(fixture(), VARS, SS, stub);
+        m.select_by_color_range('A', 100, 200, []);
+        assert.deepStrictEqual(JSON.parse(stub._state['selected_records']), []);
+        assert.deepStrictEqual(m.brushed_ranges.A.color_range, [100, 200]);
+    });
+
+    it('a null range clears the color band and the selection', () => {
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(fixture(), VARS, SS, stub);
+        m.select_by_color_range('A', 4, 6, []);
+        m.select_by_color_range('A', null, null, []);
+        assert.deepStrictEqual(m.brushed_ranges.A.color_range, []);
+        assert.deepStrictEqual(JSON.parse(stub._state['selected_records']), []);
+    });
+
+    it('set_interaction_mode keeps the color stream (clears only pins)', () => {
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(fixture(), VARS, SS, stub);
+        m.select_by_color_range('A', 4, 6, []);                    // color stream = b's records
+        const before = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        m.set_interaction_mode('cell-pin');                        // default is column-pin
+        // Color band + selection persist across a mode switch; only pins clear.
+        assert.deepStrictEqual(m.brushed_ranges.A.color_range, [4, 6]);
+        assert.deepStrictEqual(JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b), before);
+    });
+});
+
+describe('JSModel — union selection streams', () => {
+    function scalarFixture(){
+        return {
+            gp_idx:{0:10,1:11,2:12,3:13},
+            user:{0:'a',1:'b',2:'c',3:'d'},
+            y:{0:1,1:2,2:3,3:4}, color:{0:1,1:2,2:3,3:4},
+            cat:{0:'r',1:'g',2:'b',3:'r'}, fac:{0:'A',1:'A',2:'A',3:'A'},
+        };
+    }
+    const SVARS = { facet_by:'fac', x:'user', y:'y', color:'color', color_agg:'avg', categorical:'cat' };
+    const SSS = { user:{ semantic_type:'categorical' } };
+
+    it('brushed_data is the deduped UNION of box + pin + color', () => {
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(scalarFixture(), SVARS, SSS, stub);
+        m.set_box_indices('A', new Set([10, 11]), []);
+        m.set_pin_indices('A', new Set([11, 12]), []);
+        m.set_color_indices('A', new Set([13]), []);
+        const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        assert.deepStrictEqual(sel, [10, 11, 12, 13]);     // 11 appears in box+pin, deduped
+    });
+
+    it('clearing one stream leaves the others', () => {
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(scalarFixture(), SVARS, SSS, stub);
+        m.set_box_indices('A', [10, 11], []);
+        m.set_color_indices('A', [13], []);
+        m.set_color_indices('A', [], []);                  // clear COLOR only
+        assert.deepStrictEqual(JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b), [10, 11]);
+        m.set_box_indices('A', [], []);                    // clear BOX too
+        assert.deepStrictEqual(JSON.parse(stub._state['selected_records']), []);
+    });
+
+    it('set_interaction_mode clears the pin stream only (box + color persist)', () => {
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(scalarFixture(), SVARS, SSS, stub);
+        m.set_box_indices('A', [10], []);
+        m.set_pin_indices('A', [11], []);
+        m.set_color_indices('A', [12], []);
+        m.set_interaction_mode('cell-pin');                // default is column-pin
+        const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        assert.deepStrictEqual(sel, [10, 12]);             // pin (11) cleared; box+color kept
+    });
+});
+
+describe('JSModel — band box brush (2-d ↔ histogram via shared ranges)', () => {
+    function grouped(){
+        const nodes = {0:['x1000c0s0b0n0'],1:['x1000c0s0b0n1'],2:['x1000c0s1b0n0'],3:['x1000c0s1b0n1']};
+        const gp_idx = {0:1,1:2,2:3,3:4}, y = {0:1,1:9,2:1,3:9}, color = {0:1,1:2,2:3,3:4};
+        const cat = {0:'r',1:'g',2:'b',3:'r'}, fac = {0:'A',1:'A',2:'A',3:'A'};
+        const order = ['x1000c0s0b0n0','x1000c0s0b0n1','x1000c0s1b0n0','x1000c0s1b0n1'];
+        const mk = n => ['x1000','x1000c0',n.slice(0,9),n.slice(0,11),n];
+        const hierarchy = Object.fromEntries(order.map(n => [n, mk(n)]));
+        const ss = { nodes:{ semantic_type:'categorical', is_list:true,
+            category_order:order, category_hierarchy:hierarchy,
+            category_levels:['cabinet','chassis','slot','blade'] } };
+        return { data:{gp_idx,nodes,y,color,cat,fac}, ss };
+    }
+    const VARS = { facet_by:'fac', x:'nodes', y:'y', color:'color', color_agg:'avg', categorical:'cat' };
+
+    // Recompute the band-box gp_idx independently from the model's displayed cells.
+    function bandExpected(m, cr, yr){
+        const ids = new Set();
+        const cols = m.current_detail_columns('A');
+        for(let ci = 0; ci < cols.length; ci++){
+            const col = cols[ci];
+            let in_col = cr.length !== 2;
+            if(cr.length === 2) in_col = col.lo != null ? (col.lo <= cr[1] && col.hi >= cr[0]) : (ci >= cr[0] && ci <= cr[1]);
+            if(!in_col) continue;
+            for(let row = 0; row < col.bins.length; row++){
+                if(yr.length === 2 && !(row >= yr[1] && row < yr[0])) continue;
+                const idx = col.bins[row].indices;
+                for(let i = 0; i < idx.length; i++) ids.add(idx[i]);
+            }
+        }
+        return [...ids].sort((a,b)=>a-b);
+    }
+
+    it('col_range × y_range selects the box cells (deduped) into the box stream', async () => {
+        const stub = makeAnywidgetStub();
+        const { data, ss } = grouped();
+        const m = new JSModel(data, VARS, ss, stub);
+        m.brushed_ranges.A.col_range = [0, 1];   // first slot's two nodes
+        m.brushed_ranges.A.y_range = [50, 0];    // all rows ([hi, lo] descending)
+        await m._apply_brush_selection('A', [], false);
+        const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        assert.deepStrictEqual(sel, bandExpected(m, [0,1], [50,0]));
+        assert.deepStrictEqual(sel, [1, 2]);     // records on nodes 0 and 1
+    });
+
+    it('a y-only band brush (empty col_range) selects all columns in the y band', async () => {
+        const stub = makeAnywidgetStub();
+        const { data, ss } = grouped();
+        const m = new JSModel(data, VARS, ss, stub);
+        m.brushed_ranges.A.col_range = [];
+        m.brushed_ranges.A.y_range = [50, 0];    // all rows
+        await m._apply_brush_selection('A', [], false);
+        const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        assert.deepStrictEqual(sel, [1, 2, 3, 4]);   // every record
+    });
+
+    it('the box stream unions with a pin selection (no overwrite)', async () => {
+        const stub = makeAnywidgetStub();
+        const { data, ss } = grouped();
+        const m = new JSModel(data, VARS, ss, stub);
+        m.brushed_ranges.A.col_range = [0, 0];   // node 0 only -> record 1
+        m.brushed_ranges.A.y_range = [50, 0];
+        await m._apply_brush_selection('A', [], false);
+        m.set_pin_indices('A', [4], []);          // pin adds record 4
+        const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        assert.deepStrictEqual(sel, [1, 4]);
+    });
+});
