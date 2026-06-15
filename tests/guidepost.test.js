@@ -5,10 +5,11 @@ let JSModel;
 let MAX_CATEGORICAL_COLUMNS;
 let RENDER_NODE_BUDGET;
 let CHUNK_TARGET_COLS;
+let load_smart_default_configs;
 
 before(async () => {
     ({ JSModel } = await import('../guidepost/src/guidepost/js_model.js'));
-    ({ MAX_CATEGORICAL_COLUMNS, RENDER_NODE_BUDGET, CHUNK_TARGET_COLS } = await import('../guidepost/src/guidepost/consts.js'));
+    ({ MAX_CATEGORICAL_COLUMNS, RENDER_NODE_BUDGET, CHUNK_TARGET_COLS, load_smart_default_configs } = await import('../guidepost/src/guidepost/consts.js'));
 });
 
 /**
@@ -356,6 +357,95 @@ describe('JSModel — constructor / sanitize pipeline', () => {
                 model.faceted_bins[fac].column.length
             );
         }
+    });
+});
+
+
+describe('No / insufficient categorical columns (synthetic fallback)', () => {
+    // Mirrors the backend's synthetic "no grouping" column: a constant categorical
+    // marked is_synthetic in the summary stats.
+    const SYNTH = '__gp_no_grouping__';
+
+    it('smart defaults bind both facet_by and categorical to the synthetic column when there are no real categoricals', () => {
+        const sum_stats = {
+            m1: { semantic_type: 'continuous', std: 5, mean: 10, n_unique: 50 },
+            m2: { semantic_type: 'continuous', std: 3, mean: 8,  n_unique: 40 },
+            m3: { semantic_type: 'continuous', std: 2, mean: 6,  n_unique: 30 },
+            [SYNTH]: { semantic_type: 'categorical', is_synthetic: true, n_unique: 1 },
+        };
+        const cfg = load_smart_default_configs(sum_stats, null);
+        assert.strictEqual(cfg.facet_by, SYNTH);
+        assert.strictEqual(cfg.categorical, SYNTH);
+        // x/y/color still draw from the continuous columns, never the synthetic.
+        for(const role of ['x', 'y', 'color']){
+            assert.ok(cfg[role] && cfg[role] !== SYNTH, `${role} should be a continuous column`);
+        }
+    });
+
+    it('smart defaults use a single real categorical for facet_by and the synthetic for the (empty) bar chart', () => {
+        const sum_stats = {
+            m1: { semantic_type: 'continuous', std: 5, mean: 10, n_unique: 50 },
+            m2: { semantic_type: 'continuous', std: 3, mean: 8,  n_unique: 40 },
+            m3: { semantic_type: 'continuous', std: 2, mean: 6,  n_unique: 30 },
+            region: { semantic_type: 'categorical', n_unique: 5 },
+            [SYNTH]: { semantic_type: 'categorical', is_synthetic: true, n_unique: 1 },
+        };
+        const cfg = load_smart_default_configs(sum_stats, null);
+        assert.strictEqual(cfg.facet_by, 'region');
+        assert.strictEqual(cfg.categorical, SYNTH);
+    });
+
+    it('_build_categorical_bins yields an empty list when categorical is the synthetic column', () => {
+        const fixture = makeFixture(10);
+        // Constant synthetic categorical column on the fixture.
+        fixture[SYNTH] = {};
+        for(const k of Object.keys(fixture.x)) fixture[SYNTH][k] = 'All records';
+        const vars = { facet_by: 'fac', x: 'x', y: 'y', color: 'color', color_agg: 'avg', categorical: SYNTH };
+        const summary = { [SYNTH]: { semantic_type: 'categorical', is_synthetic: true, n_unique: 1 } };
+        const model = new JSModel(fixture, vars, summary, makeAnywidgetStub());
+        for(const fac of model.facets){
+            assert.deepStrictEqual(model.categorical_bins[fac], []);
+        }
+    });
+});
+
+
+describe('categorical filter — "(missing)" bucket', () => {
+    // Facet 'A', 12 rows; even indices have a null category, odd indices 'x'.
+    function nullCatFixture(){
+        const x = {}, y = {}, color = {}, cat = {}, fac = {};
+        for(let i = 0; i < 12; i++){
+            x[i] = i + 1; y[i] = (i + 1) * 2; color[i] = i; fac[i] = 'A';
+            cat[i] = (i % 2 === 0) ? null : 'x';
+        }
+        return { x, y, color, cat, fac };
+    }
+
+    function totalFilteredCount(model, fac){
+        let total = 0;
+        for(const col of model.faceted_bins[fac].column) total += col.count;
+        return total;
+    }
+
+    it('filtering on "(missing)" selects exactly the null-category rows', () => {
+        const model = buildModel(nullCatFixture());
+        model.faceted_states['A'].filter = ['(missing)'];
+        model.calculate_box_metrics('A', model.x_axis_thresholds['A'], model.y_axis_thresholds['A']);
+        assert.strictEqual(totalFilteredCount(model, 'A'), 6);
+    });
+
+    it('filtering on a real category excludes the null-category rows', () => {
+        const model = buildModel(nullCatFixture());
+        model.faceted_states['A'].filter = ['x'];
+        model.calculate_box_metrics('A', model.x_axis_thresholds['A'], model.y_axis_thresholds['A']);
+        assert.strictEqual(totalFilteredCount(model, 'A'), 6);
+    });
+
+    it('the bar chart bins null categories under "(missing)"', () => {
+        const model = buildModel(nullCatFixture());
+        const bins = model.categorical_bins['A'];
+        const missing = bins.find(b => b.key === '(missing)');
+        assert.ok(missing && missing.val === 6);
     });
 });
 

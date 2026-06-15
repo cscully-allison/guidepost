@@ -68,9 +68,11 @@ def validate_and_clean_dataframe(in_cpy, supress_warnings=False, list_columns=No
     # intentionally list-valued and parsed to Python lists upstream)
     col_diff = []
     for col in o_df.columns:
-        if col in list_columns:
+        # Guard the .iloc[0] probe against a 0-row frame (IndexError) and use
+        # isinstance rather than constructing a throwaway ndarray for the type.
+        if col in list_columns or len(o_df) == 0:
             continue
-        if(type(o_df[col].iloc[0]) == type(np.ndarray([]))):
+        if isinstance(o_df[col].iloc[0], np.ndarray):
             col_diff.append(col)
             o_df = o_df.drop(col, axis=1)
             

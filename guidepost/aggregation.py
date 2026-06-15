@@ -25,6 +25,11 @@ import pandas as pd
 # headroom for axis/color-agg switching as well.
 _AGG_CACHE_MAX = 32
 
+# Sentinel the JS side uses for null categorical values (MISSING_LABEL in
+# js_model.js). When it appears in a category filter, null rows must be matched
+# via `IS NULL` since SQL `IN (...)` never matches NULL. Keep in sync with JS.
+_MISSING_CATEGORY = "(missing)"
+
 
 # Aggregator name → DuckDB SQL function. AVG and MEDIAN are exact (DuckDB
 # uses APPROX_QUANTILE for very large groups but the row counts per cell
@@ -50,6 +55,35 @@ class AggregationEngine:
     cell layout stays aligned with the JS-side bins the heatmap is already
     rendering.
     """
+
+    @staticmethod
+    def _qi(name: str) -> str:
+        """Quote a SQL identifier, doubling any embedded double-quotes so column
+        names containing `"` can't break (or inject into) the generated SQL.
+        Values are always bound as parameters; only identifiers need this."""
+        return '"' + str(name).replace('"', '""') + '"'
+
+    @classmethod
+    def _category_clause(cls, category_col, category_filter):
+        """Builds the optional category-filter SQL fragment and its params.
+        Returns ("", []) when inactive. Honors the missing-value sentinel by
+        OR-ing an `IS NULL` test, since `IN (...)` never matches NULL rows."""
+        if not category_col or not category_filter:
+            return "", []
+        col = cls._qi(category_col)
+        concrete = [v for v in category_filter if v != _MISSING_CATEGORY]
+        want_missing = len(concrete) != len(category_filter)
+        terms = []
+        params: list = []
+        if concrete:
+            placeholders = ",".join(["?"] * len(concrete))
+            terms.append(f'{col} IN ({placeholders})')
+            params.extend(concrete)
+        if want_missing:
+            terms.append(f'{col} IS NULL')
+        if not terms:
+            return "", []
+        return "(" + " OR ".join(terms) + ")", params
 
     def __init__(self, df: pd.DataFrame) -> None:
         # Single in-process connection; DuckDB is thread-safe for reads.
@@ -177,12 +211,8 @@ class AggregationEngine:
         agg = _COLOR_AGG_SQL.get(color_agg, "AVG")
 
         # Build per-facet WHERE clauses for the optional category filter.
-        cat_clause = ""
-        params: list = []
-        if category_col and category_filter:
-            placeholders = ",".join(["?"] * len(category_filter))
-            cat_clause = f' AND "{category_col}" IN ({placeholders})'
-            params.extend(category_filter)
+        cat_sql, params = self._category_clause(category_col, category_filter)
+        cat_clause = f" AND {cat_sql}" if cat_sql else ""
 
         result: dict = {}
 
@@ -204,8 +234,8 @@ class AggregationEngine:
 
             # Datetimes need ms-since-epoch coercion before bucketing so
             # the JS-side Date thresholds match the SQL comparisons.
-            x_expr = self._coerce_for_threshold(f'"{x}"', x_thresholds)
-            y_expr = self._coerce_for_threshold(f'"{y}"', y_thresholds)
+            x_expr = self._coerce_for_threshold(self._qi(x), x_thresholds)
+            y_expr = self._coerce_for_threshold(self._qi(y), y_thresholds)
 
             # Single query computes all three aggregation levels we need —
             # per-cell stats, per-column rollup, and the facet-level color
@@ -217,12 +247,12 @@ class AggregationEngine:
                     SELECT
                         {self._threshold_case(x_expr, x_thresholds, 'x_bin')} AS x_bin,
                         {self._threshold_case(y_expr, y_thresholds, 'y_bin')} AS y_bin,
-                        "{color}" AS color_val,
-                        "{y}" AS y_val
+                        {self._qi(color)} AS color_val,
+                        {self._qi(y)} AS y_val
                     FROM df
-                    WHERE "{facet_by}" = ?
-                      AND "{x}" IS NOT NULL
-                      AND "{y}" IS NOT NULL
+                    WHERE {self._qi(facet_by)} = ?
+                      AND {self._qi(x)} IS NOT NULL
+                      AND {self._qi(y)} IS NOT NULL
                       {cat_clause}
                 ), kept AS (
                     SELECT * FROM binned WHERE x_bin IS NOT NULL AND y_bin IS NOT NULL
@@ -341,7 +371,7 @@ class AggregationEngine:
         if not has_x and not has_y:
             return np.empty(0, dtype=np.int32)
 
-        clauses = [f'"{facet_by}" = ?']
+        clauses = [f'{self._qi(facet_by)} = ?']
         params: list = [facet]
         if has_x:
             # JS sends ISO-like strings for Date axes. For TIMESTAMP WITH
@@ -351,7 +381,7 @@ class AggregationEngine:
             # JS rounded toward. Coerce to UTC-aware datetime first so the
             # bind is unambiguous.
             x_lo, x_hi = self._to_utc_if_str(x_range[0]), self._to_utc_if_str(x_range[1])
-            clauses.append(f'"{x}" >= ? AND "{x}" <= ?')
+            clauses.append(f'{self._qi(x)} >= ? AND {self._qi(x)} <= ?')
             params.extend([x_lo, x_hi])
         if has_y:
             # JS pre-normalizes y_range to ascending data values when it
@@ -360,17 +390,17 @@ class AggregationEngine:
             y0 = self._to_utc_if_str(y_range[0])
             y1 = self._to_utc_if_str(y_range[1])
             lo, hi = sorted([y0, y1])
-            clauses.append(f'"{y}" >= ? AND "{y}" <= ?')
+            clauses.append(f'{self._qi(y)} >= ? AND {self._qi(y)} <= ?')
             params.extend([lo, hi])
-        if category_col and category_filter:
-            placeholders = ",".join(["?"] * len(category_filter))
-            clauses.append(f'"{category_col}" IN ({placeholders})')
-            params.extend(category_filter)
+        cat_sql, cat_params = self._category_clause(category_col, category_filter)
+        if cat_sql:
+            clauses.append(cat_sql)
+            params.extend(cat_params)
         where = " AND ".join(clauses)
         # DISTINCT guards the forthcoming node-scoped selection path: once a
         # list-valued (exploded) column drives the WHERE, a job touching N
         # matching nodes would otherwise return its gp_idx N times.
-        sql = f'SELECT DISTINCT "gp_idx" FROM df WHERE {where}'
+        sql = f'SELECT DISTINCT {self._qi("gp_idx")} FROM df WHERE {where}'
         arr = self._conn.execute(sql, params).fetchnumpy()
         # `fetchnumpy` returns a dict {col: ndarray}; pick the single column.
         indices = next(iter(arr.values())) if arr else np.empty(0, dtype=np.int64)

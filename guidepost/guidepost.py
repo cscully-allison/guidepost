@@ -11,6 +11,16 @@ from .utils import validate_and_clean_dataframe, extract_summary_statistics
 from .seriation import compute_category_ordering
 from .aggregation import AggregationEngine
 
+# Guidepost needs two categorical roles — facet_by ("Group By") and categorical
+# ("Categorical Bar Chart"). When a dataset has fewer than two usable categorical
+# columns we affix this synthetic constant column so the unfilled role(s) have
+# something to bind to: it yields a single facet and an (empty) categorical bar
+# chart rather than a hard validation failure. The frontend keys off the
+# `is_synthetic` flag on its summary-stats entry (never the name) to relabel it
+# as "n/a" and render the empty state.
+SYNTHETIC_FACET_COL = "__gp_no_grouping__"
+SYNTHETIC_FACET_VALUE = "All records"
+
 class Guidepost(anywidget.AnyWidget):
 
     _esm = os.path.join(os.path.dirname(__file__), "static",  "guidepost.js")
@@ -114,6 +124,42 @@ class Guidepost(anywidget.AnyWidget):
         o_df, report = validate_and_clean_dataframe(in_cpy, self.suppress_warnings, self._effective_list_columns)
 
         summary_stats = extract_summary_statistics(o_df, self._effective_list_columns)
+
+        # Fill the categorical "cracks": if there are too few real (non-list)
+        # categorical columns to fill both the facet_by and categorical roles,
+        # affix a synthetic constant categorical column so guidepost still renders
+        # (a single facet + an empty/"n/a" categorical bar chart) instead of
+        # failing config validation. Done after extract_summary_statistics so the
+        # count uses pandas' authoritative semantic types, and before the Arrow
+        # serialization + DuckDB registration below so the column flows through
+        # both. cached_records_df was captured from the input frame, so the
+        # synthetic column never leaks into exported selected_records.
+        n_real_categorical = sum(
+            1 for col, info in summary_stats.items()
+            if col != 'gp_idx'
+            and info.get('semantic_type') == 'categorical'
+            and not info.get('is_list'))
+        if n_real_categorical < 2:
+            n_rows = len(o_df)
+            # Resolve a name that doesn't collide with a real column (which would
+            # silently overwrite the user's data). The frontend keys off the
+            # is_synthetic flag, not the name, so any unique name works.
+            synth_col = SYNTHETIC_FACET_COL
+            while synth_col in o_df.columns:
+                synth_col += "_"
+            o_df[synth_col] = SYNTHETIC_FACET_VALUE
+            summary_stats[synth_col] = {
+                "dtype": "object",
+                "semantic_type": "categorical",
+                "is_synthetic": True,
+                "n_rows": n_rows,
+                "n_missing": 0,
+                "pct_missing": 0.0,
+                "n_unique": 1,
+                "top": SYNTHETIC_FACET_VALUE,
+                "top_freq": n_rows,
+                "top_values": [{"value": SYNTHETIC_FACET_VALUE, "count": int(n_rows)}],
+            }
 
         # Ordering for list columns, shipped on _summary_stats (same channel as
         # is_list, so it survives config-UI rewrites). Structure-aware node-name

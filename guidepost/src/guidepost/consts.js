@@ -53,10 +53,22 @@ export const VIS_HEADER_HEIGHT = 30;
 export const HEADER_HEIGHT = 30;
 let bottom_padding = 20;
 
+// Reserved vertical space above each facet's plot area, split into two
+// non-overlapping bands so the header info no longer collides with the pinned-
+// column hover labels (bug 1.a):
+//   - HEADER_BAND: group title, "records selected for export", mode toggles
+//   - PIN_LABEL_BAND: pinned-column hover labels (rotated for narrow band x)
+// Every per-facet view group (heatmap, histograms, barchart, legend) is shifted
+// down by TOP_MARGIN as a unit, so row alignment is preserved and the axes/cells
+// (which key off OVERVIEW_LAYOUT.inner_padding) are untouched.
+export const HEADER_BAND_HEIGHT = 28;
+export const PIN_LABEL_BAND_HEIGHT = 34;
+export const TOP_MARGIN = HEADER_BAND_HEIGHT + PIN_LABEL_BAND_HEIGHT;
+
 export const FACET_LAYOUT = {
     bottom_padding: bottom_padding,
     outer_margin: 30,
-    height: OVERVIEW_LAYOUT.height + CAT_HISTOGRAM_LAYOUT.height + (2 * OVERVIEW_LAYOUT.outer_margin) + (2 * CAT_HISTOGRAM_LAYOUT.outer_margin) + bottom_padding
+    height: OVERVIEW_LAYOUT.height + CAT_HISTOGRAM_LAYOUT.height + (2 * OVERVIEW_LAYOUT.outer_margin) + (2 * CAT_HISTOGRAM_LAYOUT.outer_margin) + bottom_padding + TOP_MARGIN
 }
 
 export const FULL_SVG_WIDTH = OVERVIEW_LAYOUT.width + (2 * OVERVIEW_LAYOUT.outer_margin) + (VERT_HISTOGRAM_LAYOUT.width+(2*VERT_HISTOGRAM_LAYOUT.outer_margin)) + LEGEND_LAYOUT.width
@@ -253,8 +265,15 @@ export function load_smart_default_configs(sum_stats, data){
         }
     }
 
+    // The backend affixes a synthetic constant categorical column ("no grouping")
+    // when a dataset has too few real categoricals to fill the facet_by +
+    // categorical roles. Keep it out of the normal ranking and use it only as the
+    // last-resort fallback below so it never displaces a real grouping column.
+    const synthetic_cols = categorical.filter(c => sum_stats[c] && sum_stats[c]['is_synthetic']);
+    const real_categorical = categorical.filter(c => !(sum_stats[c] && sum_stats[c]['is_synthetic']));
+
     // Categorical ranking: 2 < n_unique < 20, prefer cardinality nearest to 6.
-    const categorical_pool = categorical
+    const categorical_pool = real_categorical
         .filter(c => {
             const n = sum_stats[c]['n_unique'];
             return n != null && n > 2 && n < 20;
@@ -273,10 +292,24 @@ export function load_smart_default_configs(sum_stats, data){
         return undefined;
     };
 
-    const facet_by = take(categorical_pool);
+    // Resolve a categorical role: prefer the cardinality-ranked pool, then any
+    // remaining real categorical (covers ≥2 categoricals all outside the 2..20
+    // window), then the synthetic column. The synthetic is taken DIRECTLY (not
+    // via `take`, which marks it used) so both roles can bind to it when there
+    // are zero real categoricals.
+    const synthetic = synthetic_cols[0];
+    const take_categorical = () => {
+        const c = take(categorical_pool);
+        if(c !== undefined) return c;
+        const r = take(real_categorical);
+        if(r !== undefined) return r;
+        return synthetic;   // undefined when no synthetic column exists
+    };
+
+    const facet_by = take_categorical();
     if(facet_by !== undefined) defaults['facet_by'] = facet_by;
 
-    const cat_choice = take(categorical_pool);
+    const cat_choice = take_categorical();
     if(cat_choice !== undefined) defaults['categorical'] = cat_choice;
 
     // Per-facet variance check: a numerical column is "good" if at least half

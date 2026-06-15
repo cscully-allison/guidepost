@@ -1,6 +1,6 @@
 import * as d3 from "https://esm.sh/d3@7";
 import { animate, Timeline } from "animejs";
-import { LEGEND_LAYOUT, OVERVIEW_LAYOUT } from "./consts";
+import { LEGEND_LAYOUT, OVERVIEW_LAYOUT, TOP_MARGIN } from "./consts";
 
 class Legend {
     constructor(model, parent, facet, color_scale, width, height) {
@@ -50,7 +50,9 @@ class Legend {
 
 
         let x_offset = OVERVIEW_LAYOUT.outer_margin;
-        let y_offset = OVERVIEW_LAYOUT.outer_margin+OVERVIEW_LAYOUT.inner_padding;
+        // + TOP_MARGIN keeps the gradient bar aligned with the heatmap plot,
+        // which shifted down by the same amount (bug 1.a).
+        let y_offset = OVERVIEW_LAYOUT.outer_margin+OVERVIEW_LAYOUT.inner_padding+TOP_MARGIN;
 
 
         let legend_grp = this.parent.append('g')
@@ -118,16 +120,19 @@ class Legend {
                 .attr('text-anchor', 'middle')
                 .attr('transform', `translate(${LEGEND_LAYOUT.width-LEGEND_LAYOUT.right_padding-40}, ${this.bar_height/2}), rotate(270)`);
         
+        // Lift the records-export label up into the header band (legend_grp now
+        // sits TOP_MARGIN lower, at the plot top) so it no longer overlaps the
+        // pinned-column hover labels (bug 1.a).
         legend_grp.append('text')
             .attr('class', 'num-records-label')
             .text(`No. of Records Selected for Export:`)
-            .attr('transform', `translate(${0}, ${-20})`);;
-        
+            .attr('transform', `translate(${0}, ${-(TOP_MARGIN + 4)})`);;
+
         legend_grp.append('text')
             .attr('class', 'text-number')
             .style('font-weight', 'bold')
             .text(` ${this.model.brushed_data[this.facet].length}`)
-            .attr('transform', `translate(${210}, ${-20})`);
+            .attr('transform', `translate(${210}, ${-(TOP_MARGIN + 4)})`);
 
         this.legend_grp = legend_grp;
 

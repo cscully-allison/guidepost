@@ -1,5 +1,5 @@
 import * as d3 from "https://esm.sh/d3@7";
-import { CAT_HISTOGRAM_LAYOUT, OVERVIEW_LAYOUT, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, HISTOGRAM_LAYOUT, LIGHT_BLUE, DEEP_LIGHT_BLUE } from "./consts";
+import { CAT_HISTOGRAM_LAYOUT, OVERVIEW_LAYOUT, X_VARIABLE_OFFSET, Y_VARIABLE_OFFSET, HISTOGRAM_LAYOUT, LIGHT_BLUE, DEEP_LIGHT_BLUE, TOP_MARGIN } from "./consts";
 
 class CategoricalBarChart{
     constructor(model, parent, facet, height, width, orientation) {
@@ -28,12 +28,13 @@ class CategoricalBarChart{
      * Performs the initial rendering of the categorical histogram.
      */
     initial_render(){
+        if(this.is_empty()){ this._render_empty_message(); return; }
         if(this.orientation == 'bottom'){
             
             //create the histograms
 
             let x_offset = X_VARIABLE_OFFSET + OVERVIEW_LAYOUT.width;
-            let y_offset = Y_VARIABLE_OFFSET + CAT_HISTOGRAM_LAYOUT.outer_margin + OVERVIEW_LAYOUT.height ;
+            let y_offset = Y_VARIABLE_OFFSET + CAT_HISTOGRAM_LAYOUT.outer_margin + OVERVIEW_LAYOUT.height + TOP_MARGIN;
 
             let h_hist = this.parent.append('g')
                     .attr('class', 'faceted-h-hist')
@@ -71,7 +72,7 @@ class CategoricalBarChart{
         else if(this.orientation == 'right'){
 
             let x_offset = X_VARIABLE_OFFSET + OVERVIEW_LAYOUT.width;
-            let y_offset = Y_VARIABLE_OFFSET + CAT_HISTOGRAM_LAYOUT.outer_margin + OVERVIEW_LAYOUT.height ;
+            let y_offset = Y_VARIABLE_OFFSET + CAT_HISTOGRAM_LAYOUT.outer_margin + OVERVIEW_LAYOUT.height + TOP_MARGIN;
 
             let v_hist = this.parent.append('g')
                 .attr('class', 'faceted-v-hist')
@@ -100,9 +101,44 @@ class CategoricalBarChart{
     }
 
     /**
+     * True when there is no categorical variable to chart — none configured or
+     * the role is bound to the backend's synthetic "no grouping" column, so
+     * categorical_bins for this facet is empty. The chart renders an "n/a"
+     * empty-state message instead of scales/axes/bars.
+     */
+    is_empty(){
+        const bins = this.model.categorical_bins[this.facet];
+        return !bins || bins.length === 0;
+    }
+
+    /** Centered two-line "n/a" note shown when there is no categorical variable. */
+    _render_empty_message(){
+        const x_offset = X_VARIABLE_OFFSET + OVERVIEW_LAYOUT.width;
+        const y_offset = Y_VARIABLE_OFFSET + CAT_HISTOGRAM_LAYOUT.outer_margin + OVERVIEW_LAYOUT.height + TOP_MARGIN;
+        const grp = this.parent.append('g')
+            .attr('class', this.orientation == 'bottom' ? 'faceted-h-hist' : 'faceted-v-hist')
+            .attr('transform', `translate(${x_offset},${y_offset})`);
+        grp.append('text')
+            .attr('class', 'empty-categorical-note')
+            .text('Categorical: n/a')
+            .attr('text-anchor', 'middle')
+            .attr('transform', `translate(${this.width / 2},${this.height / 2})`)
+            .style('fill', '#a04040')
+            .style('font-size', '10pt');
+        grp.append('text')
+            .text('No categorical variable')
+            .attr('text-anchor', 'middle')
+            .attr('transform', `translate(${this.width / 2},${this.height / 2 + 16})`)
+            .style('fill', '#888888')
+            .style('font-size', '8pt');
+        this.view = grp;
+    }
+
+    /**
      * Sets up the scales for the categorical histogram based on the current data.
      */
     setup_scales(){
+        if(this.is_empty()) return;
         this.n = Math.min(this.model.categorical_bins[this.facet].length, this.n);
         let top_n_cats = this.model.categorical_bins[this.facet].slice(0,this.n);
         
@@ -115,7 +151,11 @@ class CategoricalBarChart{
         this.calc_bar_height = Math.min(this.max_bar_height, this.drawable_height/this.n);
 
         if(this.orientation == 'bottom'){
-            if(this.model.is_more_than_n_orders_of_magnitude(0, top_n_cats[0].val, 3)){
+            // Log only when the counts genuinely span >3 orders of magnitude.
+            // top_n_cats is sorted descending, so [last] is the smallest visible
+            // count (>=1). Passing a hardcoded 0 here previously forced log every
+            // time (log10(0) = -Infinity), making the linear branch dead.
+            if(this.model.is_more_than_n_orders_of_magnitude(top_n_cats[top_n_cats.length - 1].val, top_n_cats[0].val, 3)){
                 let local_log_floor = 0.3
                 this.scale_y = d3.scaleLog()
                                     .domain([local_log_floor, top_n_cats[0].val])
@@ -151,7 +191,11 @@ class CategoricalBarChart{
                             .range([CAT_HISTOGRAM_LAYOUT.inner_padding, this.height - CAT_HISTOGRAM_LAYOUT.inner_padding])
                             .padding(0.1);
 
-            if(this.model.is_more_than_n_orders_of_magnitude(0, top_n_cats[0].val, 3)){
+            // Log only when the counts genuinely span >3 orders of magnitude.
+            // top_n_cats is sorted descending, so [last] is the smallest visible
+            // count (>=1). Passing a hardcoded 0 here previously forced log every
+            // time (log10(0) = -Infinity), making the linear branch dead.
+            if(this.model.is_more_than_n_orders_of_magnitude(top_n_cats[top_n_cats.length - 1].val, top_n_cats[0].val, 3)){
                 let local_log_floor = 0.3
                 this.scale_x = d3.scaleLog()
                                     .domain([local_log_floor, top_n_cats[0].val])
@@ -180,6 +224,7 @@ class CategoricalBarChart{
     render(){
 
         const self = this;
+        if(this.is_empty()) return;
         let top_n_cats = this.model.categorical_bins[this.facet].slice(0,this.n);
         let update_targets = [`${this.facet}_heatmap`, `${this.facet}_right_histogram`, `${this.facet}_bottom_histogram`, `${this.facet}_legend`];
 
