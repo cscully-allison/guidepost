@@ -7,7 +7,7 @@ import ast
 import json
 import os
 import sys
-from .utils import validate_and_clean_dataframe, extract_summary_statistics
+from .utils import validate_and_clean_dataframe, extract_summary_statistics, convert_date_id_columns
 from .seriation import compute_category_ordering
 from .aggregation import AggregationEngine
 
@@ -58,7 +58,12 @@ class Guidepost(anywidget.AnyWidget):
         # comma-joined node strings in ALCF LOCATION data ("nodeA,nodeB").
         # Defaults to "," but is configurable for space/semicolon formats.
         list_delimiter = kwargs.pop("list_delimiter", None)
+        # Columns to force-classify as categorical even when numeric — for
+        # identifiers the name heuristic misses, or to override an unwanted
+        # auto-classification. Mirrors list_columns; pulled before super().
+        categorical_columns = kwargs.pop("categorical_columns", None)
         super().__init__(*args, **kwargs)
+        self._categorical_columns = set(categorical_columns) if categorical_columns else set()
         self._list_columns = list(list_columns) if list_columns else []
         # Declared list columns plus any auto-detected array/list columns;
         # recomputed each load_data. Initialized so methods that reference it
@@ -123,7 +128,13 @@ class Guidepost(anywidget.AnyWidget):
 
         o_df, report = validate_and_clean_dataframe(in_cpy, self.suppress_warnings, self._effective_list_columns)
 
-        summary_stats = extract_summary_statistics(o_df, self._effective_list_columns)
+        # Convert YYYYMMDD-encoded integer columns (e.g. START_DATE_ID) to real
+        # datetimes so they drive a temporal axis. Done before summary extraction
+        # and serialization so the datetime dtype flows through both. User-declared
+        # categorical columns are skipped (they win).
+        convert_date_id_columns(o_df, skip_cols=self._categorical_columns)
+
+        summary_stats = extract_summary_statistics(o_df, self._effective_list_columns, self._categorical_columns)
 
         # Fill the categorical "cracks": if there are too few real (non-list)
         # categorical columns to fill both the facet_by and categorical roles,

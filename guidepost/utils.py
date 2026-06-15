@@ -2,8 +2,64 @@ import pandas as pd
 import numpy as np
 import warnings
 import os
+import re
 import sys
 from pandas.api import types as ptypes
+
+# Tokens that end in "id" but are ordinary words, not identifiers — excluded
+# from the numeric-ID name heuristic so e.g. POWER_GRID / IS_VALID stay numeric.
+_ID_FALSE_POSITIVE_TOKENS = {
+    "grid", "valid", "void", "fluid", "rigid", "solid", "humid", "lipid",
+    "acid", "raid", "hybrid", "pyramid", "mid", "kid", "lid", "bid", "rid", "aid",
+}
+
+
+def is_id_like_name(col):
+    """True when a column NAME looks like an identifier (e.g. USERNAME_GENID,
+    COBALT_JOBID, JOB_ID). A numeric value here is a label, not a measure, so it
+    should be categorical. Requires an underscore-delimited token ending in "id"
+    (so RESID / HUMIDITY don't match) and excludes common id-ending words."""
+    name = str(col).lower()
+    if name in ("id", "uid", "guid", "uuid"):
+        return True
+    m = re.search(r'_([a-z0-9]*id)$', name)
+    return bool(m) and m.group(1) not in _ID_FALSE_POSITIVE_TOKENS
+
+
+def convert_date_id_columns(o_df, skip_cols=None):
+    """Convert numeric YYYYMMDD-encoded columns (e.g. START_DATE_ID = 20241231)
+    to real datetimes in place, so they drive an ordered temporal axis instead of
+    being binned as a quantitative measure. Returns the list of converted column
+    names. Skips gp_idx and any user-declared skip_cols (categorical overrides)."""
+    skip_cols = set(skip_cols or [])
+    converted = []
+    for col in o_df.columns:
+        if col == 'gp_idx' or col in skip_cols:
+            continue
+        s = o_df[col]
+        if not ptypes.is_numeric_dtype(s.dtype):
+            continue
+        vals = s.dropna()
+        if len(vals) == 0:
+            continue
+        arr = vals.to_numpy(dtype='float64')
+        # All non-null values must be whole numbers in a plausible YYYYMMDD range.
+        if not np.all(np.isfinite(arr)) or not np.all(np.mod(arr, 1) == 0):
+            continue
+        iv = arr.astype('int64')
+        if not np.all((iv >= 19000101) & (iv <= 21001231)):
+            continue
+        # And every value must decode to a real calendar date (rejects 20241350).
+        try:
+            pd.to_datetime(pd.Series(iv).astype(str), format='%Y%m%d', errors='raise')
+        except (ValueError, TypeError, OverflowError):
+            continue
+        o_df[col] = pd.to_datetime(
+            s.map(lambda v: None if pd.isna(v) else f"{int(v):08d}"),
+            format='%Y%m%d', errors='coerce')
+        converted.append(col)
+    return converted
+
 
 def convert_to_float(value):
     if pd.isna(value):
@@ -98,9 +154,10 @@ def validate_and_clean_dataframe(in_cpy, supress_warnings=False, list_columns=No
 
     return o_df, report
 
-def extract_summary_statistics(o_df, list_columns=None):
+def extract_summary_statistics(o_df, list_columns=None, categorical_columns=None):
         summary = {}
         list_columns = set(list_columns or [])
+        categorical_columns = set(categorical_columns or [])
         type_counts = {"continuous": 0, "ordinal": 0, "categorical": 0}
 
         for col in o_df.columns:
@@ -143,13 +200,21 @@ def extract_summary_statistics(o_df, list_columns=None):
             n_unique = int(s.nunique(dropna=True))
 
             # determine semantic type
-            if ptypes.is_categorical_dtype(s.dtype):
+            if col in categorical_columns:
+                # User-declared categorical override (mirrors list_columns).
+                semantic = "categorical"
+            elif ptypes.is_categorical_dtype(s.dtype):
                 semantic = "ordinal" if getattr(s.dtype, "ordered", False) else "categorical"
             elif ptypes.is_bool_dtype(s.dtype):
                 semantic = "categorical"
             elif ptypes.is_numeric_dtype(s.dtype):
+                if is_id_like_name(col):
+                    # Numeric identifier (e.g. *_ID, *_GENID): the value is a
+                    # label, not a measure — categorical so it can group/filter
+                    # rather than be binned on a quantitative axis.
+                    semantic = "categorical"
                 # heuristic: small-integer domains likely ordinal (e.g., ratings)
-                if ptypes.is_integer_dtype(s.dtype) or n_unique < 20:
+                elif ptypes.is_integer_dtype(s.dtype) or n_unique < 20:
                     semantic = "ordinal"
                 else:
                     semantic = "continuous"
