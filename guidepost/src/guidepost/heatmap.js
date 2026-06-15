@@ -218,6 +218,12 @@ class Heatmap{
             return self.highlighted_scale_color(col_data.bins[row_num][self.model.vars.color_agg]);
         }
 
+        // Column-pin: every cell of a pinned column is highlighted, for parity
+        // with the other selection modes (cell-pin / 2-d brush / color band).
+        if(self._is_pinned(col_data)){
+            return self.highlighted_scale_color(col_data.bins[row_num][self.model.vars.color_agg]);
+        }
+
         // Color-legend brush: highlight any cell whose color-agg value falls in
         // the brushed color band. Independent of (OR-ed with) the x/y box brushes.
         const color_range = self.model.brushed_ranges[self.facet].color_range;
@@ -617,6 +623,9 @@ class Heatmap{
                         // selection + legend reflect the pinned node records.
                         self.model.update_row_counts(self.id_token, `${self.facet}_right_histogram`, self.facet, self.cached_bins);
                         self._sync_pinned_selection();
+                        // Recolor the (un)pinned column's cells immediately — the
+                        // selection sync only re-renders the legend, not the cells.
+                        self.refresh_cell_fills();
 
                         // Persistent ribbons for pinned regions (+ still-hovered one).
                         self.draw_ribbons(key);
