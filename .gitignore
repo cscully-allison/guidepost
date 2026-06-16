@@ -1,1 +1,24 @@
-node_modules
+node_modules/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Packaging / build artifacts
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Compiled frontend bundles (built by esbuild.config.js / publish.sh)
+guidepost/static/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environments / tooling
+.venv/
+venv/
+.env
+.pytest_cache/
+.DS_Store
