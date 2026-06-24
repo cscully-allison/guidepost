@@ -19,22 +19,13 @@ import pandas as pd
 gp = Guidepost()
 gp.load_data(pd.read_parquet("data/jobs_data.parquet"))
 
-gp.vis_configs = {
-    'x':           'start_time',       # x-axis (numeric or datetime)
-    'y':           'queue_wait',       # y-axis (numeric)
-    'color':       'nodes_requested',  # cell color (numeric)
-    'color_agg':   'avg',              # aggregation for color
-    'categorical': 'user',             # bar chart / filter
-    'facet_by':    'partition'         # splits the data into groups
-}
-
 gp   # display in a notebook cell
 ```
 
 Brush the heatmap or its histograms, then pull the selected rows back into Python:
 
 ```python
-df = gp.retrieve_selected_data()   # or: gp.selection.dataframe
+df = gp.selection.dataframe
 ```
 
 Input is a `pandas` DataFrame with at least three numeric and two categorical columns (datetime columns are supported on the x-axis).
