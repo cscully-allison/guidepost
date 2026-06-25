@@ -169,7 +169,15 @@ def _seriate_component(members, A, node_list, SpectralEmbedding):
     sub = A[members][:, members].toarray()
     emb = SpectralEmbedding(n_components=1, affinity="precomputed", random_state=0)
     coords = emb.fit_transform(sub)[:, 0]
-    local = sorted(range(len(members)), key=lambda t: (coords[t], node_list[members[t]]))
+    # On symmetric structures (e.g. a clique) the embedding eigenspace is
+    # degenerate: nodes that are mathematically tied get coordinates differing
+    # only by solver-level floating-point noise (~1e-15), which varies between
+    # runs/platforms. Round before sorting so genuine ties collapse and the
+    # name-based secondary key decides their order deterministically.
+    local = sorted(
+        range(len(members)),
+        key=lambda t: (round(float(coords[t]), 9), node_list[members[t]]),
+    )
     seq = [members[t] for t in local]
     # Eigenvectors carry a sign ambiguity; canonicalize orientation by name.
     if node_list[seq[0]] > node_list[seq[-1]]:
