@@ -74,8 +74,10 @@ jobs:
           else
             source /tmp/cleanenv/Scripts/activate  # Windows venv layout
           fi
-          pip install --upgrade pip
-          pip install dist/*.whl
+          # Use `python -m pip` (not bare `pip`) so it works on the Windows venv,
+          # where pip can't replace its own running pip.exe. No self-upgrade
+          # needed in this throwaway verification env.
+          python -m pip install dist/*.whl
           # Run from a directory OTHER than the repo root so we exercise the
           # installed package, not the local source tree. Importing Guidepost is
           # itself a smoke test (anywidget resolves the `_esm` bundle on the
