@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.10', '3.11', '3.12']
+
+    # Use bash everywhere so globs (dist/*.whl) and `&&` behave the same on the
+    # Windows runner as on Linux/macOS.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- JavaScript: install deps, build bundles, run mocha ----
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Build frontend bundles (esbuild)
+        run: node esbuild.config.js
+
+      - name: Run JS tests (mocha)
+        run: npx mocha
+
+      # ---- Python: install package, run pytest ----
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install Python package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest
+
+      - name: Run Python tests (pytest)
+        run: pytest tests/ -v
+
+      # ---- Packaging: build the wheel and verify a clean install ships the JS ----
+      - name: Build wheel + sdist
+        run: |
+          pip install build
+          python -m build
+
+      - name: Verify clean install includes the compiled JS bundle
+        run: |
+          python -m venv /tmp/cleanenv
+          # shellcheck disable=SC1091
+          if [ -f /tmp/cleanenv/bin/activate ]; then
+            source /tmp/cleanenv/bin/activate
+          else
+            source /tmp/cleanenv/Scripts/activate  # Windows venv layout
+          fi
+          pip install --upgrade pip
+          pip install dist/*.whl
+          # Run from a directory OTHER than the repo root so we exercise the
+          # installed package, not the local source tree. anywidget resolves
+          # `_esm` from the on-disk path into the bundle's *contents* at import
+          # time, so importing Guidepost is itself a smoke test that the bundle
+          # shipped; we also assert the file physically exists in the install.
+          cd "${RUNNER_TEMP:-/tmp}"
+          python - <<'PYCHECK'
+          import os, guidepost
+          from guidepost.guidepost import Guidepost  # anywidget loads the bundle here
+          pkg = os.path.dirname(guidepost.__file__)
+          bundle = os.path.join(pkg, "static", "guidepost.js")
+          assert os.path.exists(bundle), f"Compiled JS bundle missing from installed wheel: {bundle}"
+          assert os.path.getsize(bundle) > 1000, f"Bundle suspiciously small: {os.path.getsize(bundle)} bytes"
+          assert isinstance(Guidepost._esm, str) and len(Guidepost._esm) > 1000
+          print(f"OK: installed package ships {bundle} ({os.path.getsize(bundle)} bytes); Guidepost imported cleanly")
+          PYCHECK
