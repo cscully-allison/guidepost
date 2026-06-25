@@ -32,7 +32,8 @@ jobs:
       # ---- JavaScript: install deps, build bundles, run mocha ----
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Node 22 LTS: the frontend uses Object.groupBy, which needs Node 21+.
+          node-version: '22'
           cache: npm
 
       - name: Install JS dependencies
