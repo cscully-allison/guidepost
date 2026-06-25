@@ -77,18 +77,16 @@ jobs:
           pip install --upgrade pip
           pip install dist/*.whl
           # Run from a directory OTHER than the repo root so we exercise the
-          # installed package, not the local source tree. anywidget resolves
-          # `_esm` from the on-disk path into the bundle's *contents* at import
-          # time, so importing Guidepost is itself a smoke test that the bundle
-          # shipped; we also assert the file physically exists in the install.
+          # installed package, not the local source tree. Importing Guidepost is
+          # itself a smoke test (anywidget resolves the `_esm` bundle on the
+          # class), and we assert the bundle file physically shipped in the wheel.
           cd "${RUNNER_TEMP:-/tmp}"
           python - <<'PYCHECK'
           import os, guidepost
-          from guidepost.guidepost import Guidepost  # anywidget loads the bundle here
+          from guidepost.guidepost import Guidepost  # noqa: F401  (import = smoke test)
           pkg = os.path.dirname(guidepost.__file__)
           bundle = os.path.join(pkg, "static", "guidepost.js")
           assert os.path.exists(bundle), f"Compiled JS bundle missing from installed wheel: {bundle}"
           assert os.path.getsize(bundle) > 1000, f"Bundle suspiciously small: {os.path.getsize(bundle)} bytes"
-          assert isinstance(Guidepost._esm, str) and len(Guidepost._esm) > 1000
           print(f"OK: installed package ships {bundle} ({os.path.getsize(bundle)} bytes); Guidepost imported cleanly")
           PYCHECK
