@@ -168,12 +168,20 @@ def _seriate_component(members, A, node_list, SpectralEmbedding):
 
     sub = A[members][:, members].toarray()
     emb = SpectralEmbedding(n_components=1, affinity="precomputed", random_state=0)
-    coords = emb.fit_transform(sub)[:, 0]
     # On symmetric structures (e.g. a clique) the embedding eigenspace is
-    # degenerate: nodes that are mathematically tied get coordinates differing
-    # only by solver-level floating-point noise (~1e-15), which varies between
-    # runs/platforms. Round before sorting so genuine ties collapse and the
-    # name-based secondary key decides their order deterministically.
+    # degenerate, so the 1-D coordinate is not unique: the eigensolver's random
+    # starting vector picks an arbitrary basis direction, and the resulting order
+    # varies run to run and across platforms/BLAS. Pin numpy's global RNG around
+    # the fit (save/restore so we don't disturb callers) so the starting vector —
+    # and hence the ordering — is reproducible.
+    rng_state = np.random.get_state()
+    np.random.seed(0)
+    try:
+        coords = emb.fit_transform(sub)[:, 0]
+    finally:
+        np.random.set_state(rng_state)
+    # Round so any residual floating-point noise on genuinely-tied nodes collapses
+    # and the name-based secondary key decides their order deterministically.
     local = sorted(
         range(len(members)),
         key=lambda t: (round(float(coords[t]), 9), node_list[members[t]]),
