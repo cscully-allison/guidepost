@@ -13,6 +13,11 @@ dist/
 # Compiled frontend bundles (built by esbuild.config.js / publish.sh)
 guidepost/static/
 
+# Large real test datasets — keep only the committed ~1 MB samples in tests/data/.
+# (See tests/data/polaris_sample.csv.gz, which IS tracked.)
+tests/data/ANL-ALCF-DJC-POLARIS_20250101_20251231.csv.gz
+tests/data/*.parquet
+
 # Jupyter
 .ipynb_checkpoints/
 

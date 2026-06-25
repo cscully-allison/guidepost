@@ -40,7 +40,7 @@ setup(
     python_requires='>=3.10',
     include_package_data=True,
     package_data={
-        'guidepost': ['guidepost.js'],
+        'guidepost': ['static/*.js', 'static/*.js.map', 'guidepost.js'],
         'figs':['guidepost_tutorial_info.png']
     },
 )

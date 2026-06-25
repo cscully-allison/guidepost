@@ -102,8 +102,11 @@ def test_timedelta_columns_converted_to_seconds():
     assert s["min"] == 1.0 and s["max"] == 30.0  # in seconds
 
 
+# Committed ~1 MB sample: header + first 20,000 rows of the real ALCF POLARIS
+# export. Small enough to live in git so this regression runs in CI; identical
+# to the slice the test read from the full export previously.
 POLARIS_CSV = os.path.join(
-    os.path.dirname(__file__), "data", "ANL-ALCF-DJC-POLARIS_20250101_20251231.csv.gz"
+    os.path.dirname(__file__), "data", "polaris_sample.csv.gz"
 )
 
 

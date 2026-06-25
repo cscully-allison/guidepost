@@ -1,0 +1,4 @@
+# `python -m build` builds the wheel from the sdist, so the compiled frontend
+# bundles must be in the sdist for them to reach the installed wheel. They are
+# gitignored (built by esbuild.config.js), so include them explicitly here.
+recursive-include guidepost/static *.js *.js.map
