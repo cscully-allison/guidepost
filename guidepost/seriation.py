@@ -167,21 +167,21 @@ def _seriate_component(members, A, node_list, SpectralEmbedding):
         return sorted(members, key=lambda i: node_list[i])
 
     sub = A[members][:, members].toarray()
+
+    # On symmetric structures (e.g. a clique) the smallest non-zero Laplacian
+    # eigenvalue is degenerate, so the 1-D spectral coordinate is not unique:
+    # the eigensolver returns an arbitrary basis vector from that eigenspace,
+    # which varies across runs, platforms, and BLAS threading. There is no
+    # canonical order in that case, so fall back to deterministic name order.
+    # (EigenVALUES are stable even when the corresponding eigenVECTORS are not,
+    # so this test is itself reproducible.)
+    if _spectral_order_is_degenerate(sub):
+        return sorted(members, key=lambda i: node_list[i])
+
     emb = SpectralEmbedding(n_components=1, affinity="precomputed", random_state=0)
-    # On symmetric structures (e.g. a clique) the embedding eigenspace is
-    # degenerate, so the 1-D coordinate is not unique: the eigensolver's random
-    # starting vector picks an arbitrary basis direction, and the resulting order
-    # varies run to run and across platforms/BLAS. Pin numpy's global RNG around
-    # the fit (save/restore so we don't disturb callers) so the starting vector —
-    # and hence the ordering — is reproducible.
-    rng_state = np.random.get_state()
-    np.random.seed(0)
-    try:
-        coords = emb.fit_transform(sub)[:, 0]
-    finally:
-        np.random.set_state(rng_state)
-    # Round so any residual floating-point noise on genuinely-tied nodes collapses
-    # and the name-based secondary key decides their order deterministically.
+    coords = emb.fit_transform(sub)[:, 0]
+    # Round so any residual floating-point noise on near-tied nodes collapses and
+    # the name-based secondary key decides their order deterministically.
     local = sorted(
         range(len(members)),
         key=lambda t: (round(float(coords[t]), 9), node_list[members[t]]),
@@ -191,3 +191,25 @@ def _seriate_component(members, A, node_list, SpectralEmbedding):
     if node_list[seq[0]] > node_list[seq[-1]]:
         seq.reverse()
     return seq
+
+
+def _spectral_order_is_degenerate(sub, tol=1e-9):
+    """True when the 1-D spectral embedding of ``sub`` is ill-defined.
+
+    The seriation uses the eigenvector of the smallest non-zero eigenvalue of
+    the symmetric normalized Laplacian. When that eigenvalue is (near-)repeated,
+    the eigenvector — and hence the node order — is not unique. We detect that
+    from the eigenvalue *spectrum*, which ``eigvalsh`` returns deterministically
+    regardless of solver/threading, unlike the eigenvectors themselves.
+    """
+    deg = sub.sum(axis=1)
+    if np.any(deg <= 0):
+        return True  # an isolated node has no meaningful spectral position
+    d_inv_sqrt = 1.0 / np.sqrt(deg)
+    laplacian = np.eye(sub.shape[0]) - (d_inv_sqrt[:, None] * sub * d_inv_sqrt[None, :])
+    evals = np.linalg.eigvalsh(laplacian)  # ascending; evals[0] ~ 0 (connected)
+    if len(evals) < 3:
+        return False
+    # Degenerate iff the 2nd and 3rd smallest eigenvalues coincide, i.e. the
+    # smallest non-zero eigenvalue has multiplicity > 1.
+    return bool((evals[2] - evals[1]) < tol)
