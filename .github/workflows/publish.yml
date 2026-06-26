@@ -1,0 +1,64 @@
+name: Publish to PyPI
+
+# Releases are tag-driven, NOT push-driven: ordinary commits/merges to main do
+# nothing here. A release happens only when you push a version tag, e.g.
+#   git tag v0.3.2 && git push --tags
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    # Trusted Publishing (OIDC): PyPI authorizes this workflow by identity, so no
+    # token/password is stored anywhere. Requires id-token: write.
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/guidepost/
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build the gitignored frontend bundles so they ship in the wheel.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node esbuild.config.js
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Refuse to release if the tag doesn't match version.py (runpy executes the
+      # file in isolation, so we don't need the package's runtime deps installed).
+      - name: Verify tag matches package version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(python -c "import runpy; print(runpy.run_path('guidepost/version.py')['__version__'])")"
+          echo "tag=$TAG version.py=$PKG"
+          test "$TAG" = "$PKG" || { echo "::error::Tag v$TAG does not match version.py ($PKG)"; exit 1; }
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Verify wheel contains the compiled JS bundle
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          if not any(n.endswith("guidepost/static/guidepost.js") for n in names):
+              sys.exit(f"ERROR: {whl} is missing guidepost/static/guidepost.js")
+          print(f"OK: {whl} contains the compiled JS bundle")
+          PY
+
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
