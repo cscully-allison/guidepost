@@ -566,23 +566,27 @@ class JSModel{
     }
     
     /**
-     * Sanitizes data for log scale by replacing zero values with one.
+     * Sanitizes data for a log scale by clamping any value below the log floor
+     * up to the floor. A log axis starts at `log_values_floor`, so a value in
+     * [0, floor) can't be placed on it — binValues would drop it entirely (no
+     * bin matches `val < thresholds[0]`), silently losing real records (e.g.
+     * sub-1-Wh energy for standby/short jobs). Clamping puts them in bin 0 so
+     * cells, the right histogram, the count strip and brush/pin selection all
+     * agree. null/NaN are guarded (note `null < 1` is true in JS) so genuine
+     * missing values stay unbinned rather than masquerading as floor values.
      * @param {Array} data - The data to sanitize.
      * @param {string} col - The column to sanitize.
      * @returns {Array} - The sanitized data.
      */
     sanitize_data_for_log(data, col){
         data.forEach((element, i, arr) => {
-            //setting to 1 in this context is ok at
-            // the resolution of analysis we are doing
-            // diff 1 sec vs. 0 sec is functionally
-            // the same
-            if (element[col] == 0){
-                arr[i][col] = 1;
+            const v = element[col];
+            if (v != null && !Number.isNaN(v) && v < this.log_values_floor){
+                arr[i][col] = this.log_values_floor;
             }
         });
-    
-        return data; 
+
+        return data;
     }
 
     /**
@@ -2027,6 +2031,14 @@ class JSModel{
      * displayed cells whose column is in col_range (empty = all columns) and
      * whose row is in y_range (empty = all rows). Grouped columns carry
      * lo/hi (node-index overlap); scalar columns are matched by array index.
+     *
+     * A column's `bins` only hold rows with a non-null, in-range y value, so
+     * summing bin indices silently drops null/NaN-y rows — common for e.g.
+     * Failed jobs that never recorded a runtime metric. When the brush spans
+     * the FULL y extent (or sets no y restriction), the user is selecting whole
+     * columns, so use `col.indices` (the column's full membership) to match the
+     * displayed "(N records)" count and column-pin selection. A partial y-brush
+     * still restricts to the covered cells (null-y rows have no cell to brush).
      */
     _band_box_indices(facet){
         const cols = this.current_detail_columns(facet) || [];
@@ -2034,6 +2046,9 @@ class JSModel{
         const yr = this.brushed_ranges[facet].y_range;
         const has_col = cr.length === 2;
         const has_y = yr.length === 2;
+        // Rows are indexed 0..nbins-1; a full-height brush yields yr ≈ [nbins-1, -1].
+        const nbins = (cols[0] && cols[0].bins && cols[0].bins.length) || 0;
+        const y_covers_all = !has_y || (yr[1] <= 0 && yr[0] >= nbins - 1);
         const ids = new Set();
         for(let ci = 0; ci < cols.length; ci++){
             const col = cols[ci];
@@ -2045,8 +2060,14 @@ class JSModel{
                     : (ci >= cr[0] && ci <= cr[1]);          // scalar: column-index range
             }
             if(!in_col) continue;
+            if(y_covers_all){
+                // Whole column selected → full membership, including null-y rows.
+                const idx = col.indices;
+                if(idx) for(let i = 0; i < idx.length; i++) ids.add(idx[i]);
+                continue;
+            }
             for(let row = 0; row < col.bins.length; row++){
-                if(has_y && !(row >= yr[1] && row < yr[0])) continue;   // y_range is [hi, lo] descending
+                if(!(row >= yr[1] && row < yr[0])) continue;   // y_range is [hi, lo] descending
                 const idx = col.bins[row].indices;
                 if(!idx) continue;
                 for(let i = 0; i < idx.length; i++) ids.add(idx[i]);

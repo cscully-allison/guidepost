@@ -143,6 +143,7 @@ class Heatmap{
                     .attr('transform', (d, i)=>`translate(${x_offset},${y_offset})`)
                     .attr('width', this.width)
                     .attr('height', this.height);
+        this.view = view;
 
 
         let axis_left = d3.axisLeft().scale(this.scale_y_inverse);
@@ -155,30 +156,7 @@ class Heatmap{
             .call(axis_left)   
             .attr('transform', `translate(${OVERVIEW_LAYOUT.inner_padding},${0})`);
 
-        if(this.x_is_band){
-            // Thin ticks so labels don't collide at high node cardinality, then
-            // rotate (≤45°) and truncate long names.
-            const domain = this.scale_x.domain();
-            const max_labels = 40;
-            const step = Math.max(1, Math.ceil(domain.length / max_labels));
-            const tick_vals = domain.filter((d, i) => i % step === 0);
-            view.append('g')
-                .attr('class', 'bottom-axis')
-                .call(d3.axisBottom(this.scale_x).tickValues(tick_vals))
-                .attr('transform', `translate(${0},${OVERVIEW_LAYOUT.height-OVERVIEW_LAYOUT.inner_padding})`)
-                .selectAll('text')
-                    .attr('text-anchor', 'start')
-                    .attr('transform', 'rotate(45)')
-                    .text(d => (typeof d === 'string' && d.length > MAX_NODE_LABEL_CHARS)
-                        ? d.slice(0, MAX_NODE_LABEL_CHARS) + '…'
-                        : d);
-        }
-        else{
-            view.append('g')
-                .attr('class', 'bottom-axis')
-                .call(d3.axisBottom().scale(this.scale_x.scale).ticks(this.scale_x.get_ticks()))
-                .attr('transform', `translate(${0},${OVERVIEW_LAYOUT.height-OVERVIEW_LAYOUT.inner_padding})`)
-        }
+        this.draw_x_axis();
 
         
         // Suppress the "Group:" title when faceting on the backend's synthetic
@@ -209,8 +187,38 @@ class Heatmap{
                 })
                 .attr('text-anchor', 'middle')
                 .attr('transform', `translate(${-10},${this.height/2}) rotate(270)`);
+    }
 
-        this.view = view;
+    /** Draws (or redraws) the bottom x-axis. Idempotent — selects the existing
+     *  `.bottom-axis` group or creates it — so it can be re-called on detail-zoom
+     *  re-renders to keep a grouped/list (band) x-axis in sync with the columns. */
+    draw_x_axis(){
+        let axis_g = this.view.select('.bottom-axis');
+        if(axis_g.empty()){
+            axis_g = this.view.append('g').attr('class', 'bottom-axis');
+        }
+        axis_g.attr('transform', `translate(${0},${OVERVIEW_LAYOUT.height-OVERVIEW_LAYOUT.inner_padding})`);
+
+        if(this.x_is_band){
+            // Thin ticks so labels don't collide at high node cardinality, then
+            // rotate (≤45°) and truncate long names.
+            const domain = this.scale_x.domain();
+            const max_labels = 40;
+            const step = Math.max(1, Math.ceil(domain.length / max_labels));
+            const tick_vals = domain.filter((d, i) => i % step === 0);
+            axis_g
+                .call(d3.axisBottom(this.scale_x).tickValues(tick_vals))
+                .selectAll('text')
+                    .attr('text-anchor', 'start')
+                    .attr('transform', 'rotate(45)')
+                    .text(d => (typeof d === 'string' && d.length > MAX_NODE_LABEL_CHARS)
+                        ? d.slice(0, MAX_NODE_LABEL_CHARS) + '…'
+                        : d);
+        }
+        else{
+            axis_g
+                .call(d3.axisBottom().scale(this.scale_x.scale).ticks(this.scale_x.get_ticks()));
+        }
     }
 
     /**
@@ -920,6 +928,7 @@ class Heatmap{
         this.model.detail_range[this.facet] = range;
         this._cols_cache = null;
         this.update_scales();
+        this.draw_x_axis();
         this.render();
     }
 
@@ -1535,21 +1544,30 @@ class Heatmap{
 
         if(this.x_is_band){
             const cr = ranges.col_range, yr = ranges.y_range;
+            const has_col = cr.length === 2, has_y = yr.length === 2;
+            // Neither axis constrained → no band selection (a cleared brush leaves
+            // both empty). Don't draw a phantom full box. A full-y brush has a
+            // non-empty col_range; a y-band histogram brush has a non-empty y_range.
+            if(!has_col && !has_y){ g.call(this.cell_brush.move, null); return; }
             const cols = this.current_columns();
             // Columns covered by col_range (empty col_range => all columns, e.g. a
             // y-only right-histogram brush spans the full x extent).
-            const covered = cr.length === 2
+            const covered = has_col
                 ? cols.filter(c => c.lo != null ? (c.lo <= cr[1] && c.hi >= cr[0])
                                                 : true)   // scalar: handled by index below
                 : cols;
-            const idxCovered = (cr.length === 2 && cols.length && cols[0].lo == null)
+            const idxCovered = (has_col && cols.length && cols[0].lo == null)
                 ? cols.filter((c, i) => i >= cr[0] && i <= cr[1])
                 : covered;
-            if(yr.length !== 2 || !idxCovered.length){ g.call(this.cell_brush.move, null); return; }
+            if(!idxCovered.length){ g.call(this.cell_brush.move, null); return; }
             const cw = this.col_width();
             const px0 = Math.min(...idxCovered.map(c => this.x_pos(c.threshold)));
             const px1 = Math.max(...idxCovered.map(c => this.x_pos(c.threshold))) + cw;
-            const py = [this.scale_y_blocks(yr[0]), this.scale_y_blocks(yr[1])];
+            // An empty y_range means "full y" (see on_cell_brush_end) — redraw a
+            // full-height box over the covered columns rather than clearing it.
+            const py = has_y
+                ? [this.scale_y_blocks(yr[0]), this.scale_y_blocks(yr[1])]
+                : [OVERVIEW_LAYOUT.inner_padding, OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding];
             g.call(this.cell_brush.move, [[px0, Math.min(...py)], [px1, Math.max(...py)]]);
             return;
         }
@@ -1604,9 +1622,21 @@ class Heatmap{
                 if(col.lo != null){ lo = Math.min(lo, col.lo); hi = Math.max(hi, col.hi); }
                 else { lo = Math.min(lo, ci); hi = Math.max(hi, ci); }
             }
+            // A band column's cells are a y-histogram; a job whose y falls outside
+            // the binned range (null, or below the log-scale floor) sits in NO cell.
+            // When the drag spans (within one row of) the full cell-area height the
+            // user means "these columns, all y", so drop the y restriction — an empty
+            // y_range routes _band_box_indices to col.indices (full membership),
+            // matching column-pin and the "(N records)" count. Pixel coverage is the
+            // robust signal (the mapped row-range rarely hits the exact edges). A
+            // partial-height drag keeps y_range and still restricts per-cell.
+            const full_y0 = OVERVIEW_LAYOUT.inner_padding;
+            const full_y1 = OVERVIEW_LAYOUT.height - OVERVIEW_LAYOUT.inner_padding;
+            const tol = this._cell_row_height(cols);   // one row of slack
+            const covers_full_y = (y0 <= full_y0 + tol) && (y1 >= full_y1 - tol);
             ranges.x_range = [];
             ranges.col_range = (lo !== Infinity) ? [lo, hi] : [];
-            ranges.y_range = y_range;
+            ranges.y_range = covers_full_y ? [] : y_range;
         } else {
             const xa = this.scale_x.scale.invert(x0);
             const xb = this.scale_x.scale.invert(x1);
