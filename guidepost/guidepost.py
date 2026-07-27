@@ -77,6 +77,16 @@ class Guidepost(anywidget.AnyWidget):
         # identifiers the name heuristic misses, or to override an unwanted
         # auto-classification. Mirrors list_columns; pulled before super().
         categorical_columns = kwargs.pop("categorical_columns", None)
+        # Optional override for list-column x-axis ordering, replacing the
+        # built-in node-layout / seriation heuristics — for ordinal-but-not-
+        # hierarchical values the heuristics can't order (e.g. nodes named
+        # "1","2","3"). Either a single callable applied to every list column,
+        # or a {column: callable} dict for per-column control. Each callable is
+        # a full-list transform: it receives the list of distinct category
+        # values and returns them reordered. A callable can't be JSON-synced,
+        # so like list_columns this is a plain Python attribute (not a trait);
+        # it runs in load_data and only its *result* ships to the frontend.
+        sort_by = kwargs.pop("sort_by", None)
         super().__init__(*args, **kwargs)
         self._categorical_columns = set(categorical_columns) if categorical_columns else set()
         self._list_columns = list(list_columns) if list_columns else []
@@ -85,6 +95,20 @@ class Guidepost(anywidget.AnyWidget):
         # before the first load don't fail.
         self._effective_list_columns = list(self._list_columns)
         self._list_delimiter = list_delimiter or ","
+        # Validate up front so a bad sort_by fails at construction, not silently
+        # at render. None | callable | {str: callable} are the only valid shapes.
+        if sort_by is not None:
+            if isinstance(sort_by, dict):
+                bad = [k for k, v in sort_by.items() if not callable(v)]
+                if bad:
+                    raise TypeError(
+                        "sort_by dict values must be callables; non-callable "
+                        f"value(s) for column(s): {bad}")
+            elif not callable(sort_by):
+                raise TypeError(
+                    "sort_by must be a callable or a {column: callable} dict, "
+                    f"got {type(sort_by).__name__}")
+        self._sort_by = sort_by
         # DuckDB-backed aggregator. Lazily created when the first DataFrame
         # is loaded — keeping it None until then so widgets constructed
         # without data don't pay the import/registration cost.
@@ -194,7 +218,8 @@ class Guidepost(anywidget.AnyWidget):
         # that retains every node); arbitrary categories fall back to spectral
         # seriation (ships `category_score` for the column cap). Both share
         # `category_order` for the kept/ordered sequence.
-        ordering = compute_category_ordering(o_df, self._effective_list_columns)
+        ordering = compute_category_ordering(
+            o_df, self._effective_list_columns, sort_overrides=self._sort_by)
         for col, info in ordering.items():
             if col not in summary_stats:
                 continue
