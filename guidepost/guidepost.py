@@ -7,9 +7,11 @@ import ast
 import json
 import os
 import sys
+from datetime import datetime
 from .utils import validate_and_clean_dataframe, extract_summary_statistics, convert_date_id_columns
 from .seriation import compute_category_ordering
 from .aggregation import AggregationEngine
+from .selection import Selection
 
 # Guidepost needs two categorical roles — facet_by ("Group By") and categorical
 # ("Categorical Bar Chart"). When a dataset has fewer than two usable categorical
@@ -20,21 +22,6 @@ from .aggregation import AggregationEngine
 # as "n/a" and render the empty state.
 SYNTHETIC_FACET_COL = "__gp_no_grouping__"
 SYNTHETIC_FACET_VALUE = "All records"
-
-
-class Selection:
-    """Wrapper around the records selected in the widget.
-
-    The selected DataFrame is exposed as `.dataframe`. This indirection
-    leaves room to attach further selection metadata in the future without
-    changing the `gp.selection` access pattern.
-    """
-
-    def __init__(self, dataframe):
-        self.dataframe = dataframe
-
-    def __repr__(self):
-        return f"Selection(dataframe={self.dataframe!r})"
 
 
 class Guidepost(anywidget.AnyWidget):
@@ -57,6 +44,13 @@ class Guidepost(anywidget.AnyWidget):
     _summary_stats = traitlets.Dict({}).tag(sync=True)
 
     suppress_warnings = False
+
+    # Cap on the retained selection history. The analyst cycles through many
+    # brushes in a session; keeping the last N snapshots bounds memory while
+    # still giving `selection.history` useful provenance. Snapshots are cheap —
+    # only the gp_idx list + timestamp are stored; the DataFrame and predicate
+    # materialize lazily on access.
+    _SELECTION_HISTORY_MAX = 50
 
     def __init__(self, *args, **kwargs):
         # `records` is a property (not a traitlet) so HasTraits silently
@@ -89,6 +83,10 @@ class Guidepost(anywidget.AnyWidget):
         # is loaded — keeping it None until then so widgets constructed
         # without data don't pay the import/registration cost.
         self._agg_engine = None
+        # Provenance: every distinct non-empty selection is snapshotted here so
+        # `selection.history` can surface past selections. Populated by the
+        # `selected_records` observer below.
+        self._selection_history = []
         # Route JS-originated request_aggregation / request_brush_indices
         # messages here. anywidget calls the handler with (widget, content,
         # buffers); content is the parsed JSON payload. Note: do NOT name
@@ -96,6 +94,8 @@ class Guidepost(anywidget.AnyWidget):
         # class's comm dispatcher, and shadowing it eats every incoming
         # message before it reaches on_msg callbacks.
         self.on_msg(self._dispatch_custom_msg)
+        # Record each selection as it syncs back from the frontend.
+        self.observe(self._record_selection_history, names="selected_records")
         if records is not None:
             self.records = records
 
@@ -287,10 +287,45 @@ class Guidepost(anywidget.AnyWidget):
 
     @property
     def selection(self):
-        # `selection` is intentionally an object wrapper rather than the bare
-        # DataFrame so additional selection metadata can be hung off it later
-        # without breaking callers. The DataFrame lives on `.dataframe`.
-        return Selection(self.retrieve_selected_data())
+        # A first-class Selection bound to this widget for the *current*
+        # selected_records. It exposes `.dataframe` (unchanged access pattern)
+        # plus `.predicate`, `.to_pandas()/.to_sql_where()/.to_altair_filter()`,
+        # `.summary()`, `.describe_distribution(col)` and `.history`. Lazy: the
+        # DataFrame and predicate materialize on first access.
+        return Selection(self, self._current_selected_idx())
+
+    def _current_selected_idx(self):
+        """Parse the current selected_records trait into a list of gp_idx."""
+        try:
+            return list(json.loads(self.selected_records))
+        except (ValueError, TypeError):
+            return []
+
+    def _record_selection_history(self, change):
+        """Snapshot each new, non-empty, changed selection for provenance.
+
+        Cheap by construction — stores only the gp_idx list + a timestamp; the
+        DataFrame and predicate are derived lazily if/when the snapshot is read.
+        """
+        try:
+            idx = list(json.loads(change.get("new", "[]")))
+        except (ValueError, TypeError):
+            return
+        if not idx:
+            return
+        # Skip no-op repeats (same set of records as the last snapshot).
+        if self._selection_history and self._selection_history[-1].selected_idx == idx:
+            return
+        snap = Selection(
+            self, idx,
+            timestamp=datetime.now(),
+            history_index=len(self._selection_history),
+        )
+        self._selection_history.append(snap)
+        if len(self._selection_history) > self._SELECTION_HISTORY_MAX:
+            # Drop the oldest; keep history_index stable-ish for display by not
+            # renumbering (indices remain monotonically increasing).
+            self._selection_history.pop(0)
 
     def retrieve_selected_data(self):
         if self.cached_records_df is None:
