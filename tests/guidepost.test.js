@@ -192,6 +192,18 @@ describe('JSModel — pure helpers', () => {
             model.sanitize_data_for_log(data, 'v');
             assert.deepStrictEqual(data.map(d => d.v), [1, 1, 5, 1]);
         });
+        it('clamps fractional sub-floor values up to the floor', () => {
+            const data = [{ v: 0.3 }, { v: 0.999 }, { v: 1 }, { v: 42 }];
+            model.sanitize_data_for_log(data, 'v');
+            assert.deepStrictEqual(data.map(d => d.v), [1, 1, 1, 42]);
+        });
+        it('leaves null / NaN untouched (not forced to the floor)', () => {
+            const data = [{ v: null }, { v: NaN }, { v: 0.5 }];
+            model.sanitize_data_for_log(data, 'v');
+            assert.strictEqual(data[0].v, null);
+            assert.ok(Number.isNaN(data[1].v));
+            assert.strictEqual(data[2].v, 1);   // sub-floor still clamped
+        });
     });
 
     describe('convert_to_date', () => {
@@ -357,6 +369,69 @@ describe('JSModel — constructor / sanitize pipeline', () => {
                 model.faceted_bins[fac].column.length
             );
         }
+    });
+});
+
+
+describe('JSModel — log y axis keeps sub-floor records in bin 0', () => {
+    // A log y axis floors at log_values_floor (1). Values in [0, 1) can't be
+    // placed on it; before the fix binValues dropped them, so cells / the right
+    // histogram / the per-cell brush undercounted vs the membership readouts
+    // (count strip, column-pin). sanitize_data_for_log now clamps them to the
+    // floor so every consumer agrees.
+    function catXLogY(withNull){
+        const gp_idx = {0:0,1:1,2:2,3:3,4:4,5:5};
+        const user   = {0:'u0',1:'u0',2:'u0',3:'u1',4:'u1',5:'u1'};
+        const y      = {0:0.3, 1:100, 2:10000, 3:1, 4:1000, 5:100000};   // spans >3 orders -> log
+        const color  = {0:1,1:2,2:3,3:4,4:5,5:6};
+        const cat    = {0:'a',1:'b',2:'a',3:'b',4:'a',5:'b'};
+        const fac    = {0:'A',1:'A',2:'A',3:'A',4:'A',5:'A'};
+        if(withNull){ gp_idx[6]=6; user[6]='u0'; y[6]=null; color[6]=7; cat[6]='a'; fac[6]='A'; }
+        const ss = { user:{ semantic_type:'categorical' } };
+        return { data:{gp_idx,user,y,color,cat,fac}, ss };
+    }
+    const CATX_VARS = { facet_by:'fac', x:'user', y:'y', color:'color', color_agg:'avg', categorical:'cat' };
+    const colByThreshold = (m, t) => m.faceted_bins.A.column.find(c => String(c.threshold) === t);
+
+    it('uses a log y scale and clamps the sub-floor record into bin 0', () => {
+        const { data, ss } = catXLogY(false);
+        const m = new JSModel(data, CATX_VARS, ss, makeAnywidgetStub());
+        assert.strictEqual(m.scale_types.A.y.log, true);
+        const u0 = colByThreshold(m, 'u0');
+        // gp_idx 0 (y=0.3, sub-floor) is now binned into the bottom row, not dropped.
+        assert.ok(Array.from(u0.bins[0].indices).includes(0), 'sub-floor record must land in bin 0');
+    });
+
+    it('cells retain every record — bin sum equals column membership', () => {
+        const { data, ss } = catXLogY(false);
+        const m = new JSModel(data, CATX_VARS, ss, makeAnywidgetStub());
+        for(const col of m.faceted_bins.A.column){
+            const binned = col.bins.reduce((a, b) => a + b.count, 0);
+            assert.strictEqual(binned, col.count, `column ${col.threshold} must drop no records`);
+        }
+        // Right histogram (row_major_counts) now sums to the full record count.
+        assert.strictEqual(m.row_major_counts.A.reduce((a, b) => a + b, 0), 6);
+    });
+
+    it('a partial bottom band brush selects the sub-floor record', async () => {
+        const { data, ss } = catXLogY(false);
+        const stub = makeAnywidgetStub();
+        const m = new JSModel(data, CATX_VARS, ss, stub);
+        m.brushed_ranges.A.col_range = [];
+        m.brushed_ranges.A.y_range = [1, -1];   // bottom row only (partial y)
+        await m._apply_brush_selection('A', [], false);
+        const sel = JSON.parse(stub._state['selected_records']);
+        assert.ok(sel.includes(0), 'sub-floor record sits in the bottom cell and must be brushable');
+    });
+
+    it('genuine null-y records stay out of cells (only membership counts them)', () => {
+        const { data, ss } = catXLogY(true);
+        const m = new JSModel(data, CATX_VARS, ss, makeAnywidgetStub());
+        const u0 = colByThreshold(m, 'u0');
+        assert.strictEqual(u0.count, 4);   // membership: gp_idx 0,1,2,6
+        assert.strictEqual(u0.bins.reduce((a, b) => a + b.count, 0), 3);   // null (6) not binned
+        const inBins = u0.bins.some(b => Array.from(b.indices).includes(6));
+        assert.ok(!inBins, 'null-y record must not appear in any cell');
     });
 });
 
@@ -1434,5 +1509,97 @@ describe('JSModel — band box brush (2-d ↔ histogram via shared ranges)', () 
         m.set_pin_indices('A', [4], []);          // pin adds record 4
         const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
         assert.deepStrictEqual(sel, [1, 4]);
+    });
+
+    // A scalar categorical x with null-y rows: those rows have no cell (they
+    // fall in no y-bin), but they DO belong to the column. A full-height brush
+    // must select them (match the displayed column count); a partial y-brush
+    // legitimately excludes them.
+    function scalarWithNullY(){
+        // user 'u0' has 3 records, one with null y; 'u1' has 2, all with y.
+        const gp_idx = {0:0,1:1,2:2,3:3,4:4};
+        const user   = {0:'u0',1:'u0',2:'u0',3:'u1',4:'u1'};
+        const y      = {0:1,   1:9,   2:null,3:1,   4:9};
+        const color  = {0:1,   1:2,   2:3,   3:4,   4:5};
+        const cat    = {0:'r', 1:'g', 2:'b', 3:'r', 4:'g'};
+        const fac    = {0:'A', 1:'A', 2:'A', 3:'A', 4:'A'};
+        const ss = { user:{ semantic_type:'categorical' } };
+        return { data:{gp_idx,user,y,color,cat,fac}, ss };
+    }
+    const SCALAR_VARS = { facet_by:'fac', x:'user', y:'y', color:'color', color_agg:'avg', categorical:'cat' };
+
+    it('a full-height band brush includes null-y rows (matches the column count)', async () => {
+        const stub = makeAnywidgetStub();
+        const { data, ss } = scalarWithNullY();
+        const m = new JSModel(data, SCALAR_VARS, ss, stub);
+        m.brushed_ranges.A.col_range = [];       // all columns
+        m.brushed_ranges.A.y_range = [50, -1];   // full y extent
+        await m._apply_brush_selection('A', [], false);
+        const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        assert.deepStrictEqual(sel, [0, 1, 2, 3, 4]);   // incl. record 2 (null y)
+    });
+
+    it('a partial y-brush still excludes null-y rows (no cell to brush)', async () => {
+        const stub = makeAnywidgetStub();
+        const { data, ss } = scalarWithNullY();
+        const m = new JSModel(data, SCALAR_VARS, ss, stub);
+        const nbins = m.current_detail_columns('A')[0].bins.length;
+        m.brushed_ranges.A.col_range = [];
+        m.brushed_ranges.A.y_range = [Math.floor(nbins/2), -1];   // lower half only
+        await m._apply_brush_selection('A', [], false);
+        const sel = JSON.parse(stub._state['selected_records']);
+        assert.ok(!sel.includes(2), 'null-y record must not appear in a partial y-brush');
+    });
+
+    // Grouped LIST x (the reported bug): a job whose y is null OR below the log
+    // floor lands in no cell but IS in the column's membership. Record gp_idx=5
+    // has null y on node n0 — in col.indices but in no col.bins[row].indices. A
+    // full-height band drag (represented as an empty y_range by on_cell_brush_end)
+    // must select it; a partial y-brush must not.
+    function groupedWithOutOfCellRow(){
+        const nodes = {0:['x1000c0s0b0n0'],1:['x1000c0s0b0n1'],2:['x1000c0s1b0n0'],3:['x1000c0s1b0n1'],4:['x1000c0s0b0n0']};
+        const gp_idx = {0:1,1:2,2:3,3:4,4:5}, y = {0:1,1:9,2:1,3:9,4:null}, color = {0:1,1:2,2:3,3:4,4:2};
+        const cat = {0:'r',1:'g',2:'b',3:'r',4:'g'}, fac = {0:'A',1:'A',2:'A',3:'A',4:'A'};
+        const order = ['x1000c0s0b0n0','x1000c0s0b0n1','x1000c0s1b0n0','x1000c0s1b0n1'];
+        const mk = n => ['x1000','x1000c0',n.slice(0,9),n.slice(0,11),n];
+        const hierarchy = Object.fromEntries(order.map(n => [n, mk(n)]));
+        const ss = { nodes:{ semantic_type:'categorical', is_list:true,
+            category_order:order, category_hierarchy:hierarchy,
+            category_levels:['cabinet','chassis','slot','blade'] } };
+        return { data:{gp_idx,nodes,y,color,cat,fac}, ss };
+    }
+
+    it('full-height grouped list-x brush (empty y_range) includes out-of-cell rows', async () => {
+        const stub = makeAnywidgetStub();
+        const { data, ss } = groupedWithOutOfCellRow();
+        const m = new JSModel(data, VARS, ss, stub);
+        m.brushed_ranges.A.col_range = [0, 3];   // all four nodes
+        m.brushed_ranges.A.y_range = [];         // full y (on_cell_brush_end sentinel)
+        await m._apply_brush_selection('A', [], false);
+        const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        assert.deepStrictEqual(sel, [1, 2, 3, 4, 5]);   // incl. record 5 (null y)
+    });
+
+    it('numeric full y-band (histogram path) includes out-of-cell rows', async () => {
+        const stub = makeAnywidgetStub();
+        const { data, ss } = groupedWithOutOfCellRow();
+        const m = new JSModel(data, VARS, ss, stub);
+        m.brushed_ranges.A.col_range = [];       // all columns (y-only brush)
+        m.brushed_ranges.A.y_range = [50, -1];   // full y band (numeric)
+        await m._apply_brush_selection('A', [], false);
+        const sel = JSON.parse(stub._state['selected_records']).sort((a,b)=>a-b);
+        assert.deepStrictEqual(sel, [1, 2, 3, 4, 5]);
+    });
+
+    it('partial y-brush excludes out-of-cell rows for a grouped list x', async () => {
+        const stub = makeAnywidgetStub();
+        const { data, ss } = groupedWithOutOfCellRow();
+        const m = new JSModel(data, VARS, ss, stub);
+        const nbins = m.current_detail_columns('A')[0].bins.length;
+        m.brushed_ranges.A.col_range = [0, 3];
+        m.brushed_ranges.A.y_range = [Math.floor(nbins/2), -1];   // lower half only
+        await m._apply_brush_selection('A', [], false);
+        const sel = JSON.parse(stub._state['selected_records']);
+        assert.ok(!sel.includes(5), 'out-of-cell (null-y) record must not appear in a partial y-brush');
     });
 });
