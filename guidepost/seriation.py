@@ -15,23 +15,63 @@ Both derive from the same node x node co-occurrence matrix. sklearn/scipy are
 imported lazily so the cost is only paid when a list column is present.
 """
 
+import warnings
+
 import numpy as np
 
 from .node_layout import compute_node_layout
 
 
-def compute_category_ordering(o_df, list_columns):
-    """Dispatch ordering per list column: prefer structure-aware node-name
-    layout, fall back to spectral co-occurrence seriation.
+def _resolve_override(sort_overrides, col):
+    """Resolve the user sort override applicable to *col*, if any. A bare
+    callable applies to every column; a dict maps column name -> callable."""
+    if sort_overrides is None:
+        return None
+    if callable(sort_overrides):
+        return sort_overrides
+    if isinstance(sort_overrides, dict):
+        return sort_overrides.get(col)
+    return None
 
-    Returns ``{col: info}`` where *info* is either the structured shape
-    ``{"order", "hierarchy", "levels"}`` (node names follow a hardware-layout
-    convention) or the seriation shape ``{"order", "score"}`` (arbitrary
-    categories). The frontend treats both uniformly via ``category_order`` and
-    branches on the presence of ``category_hierarchy``.
+
+def _apply_override(fn, names):
+    """Run a user override (full-list transform) over the distinct category
+    names, coercing the result to the String() keys the frontend uses. Raises
+    on a non-iterable return so the caller can fall back to the heuristics."""
+    ordered = fn(list(names))
+    return [str(k) for k in ordered]
+
+
+def compute_category_ordering(o_df, list_columns, sort_overrides=None):
+    """Dispatch ordering per list column: a user override (if provided) wins,
+    else prefer structure-aware node-name layout, else fall back to spectral
+    co-occurrence seriation.
+
+    Returns ``{col: info}`` where *info* is one of:
+    - ``{"order"}`` — a user ``sort_overrides`` transform for this column,
+    - ``{"order", "hierarchy", "levels"}`` — node names follow a hardware-layout
+      convention, or
+    - ``{"order", "score"}`` — arbitrary categories (seriation).
+    The frontend treats all three uniformly via ``category_order`` and branches
+    on the presence of ``category_hierarchy``.
+
+    *sort_overrides* is ``None``, a single callable applied to every list
+    column, or a ``{column: callable}`` dict. Each callable receives the list
+    of distinct category values and returns them reordered. A callable that
+    raises (or returns a non-iterable) falls back to the heuristics for that
+    column with a warning, so a bad override never aborts data loading.
     """
     if not list_columns:
         return {}
+
+    # Warn on dict keys that don't name a list column (typo / out of scope):
+    # they'd otherwise be silently ignored.
+    if isinstance(sort_overrides, dict):
+        unknown = [c for c in sort_overrides if c not in list_columns]
+        if unknown:
+            warnings.warn(
+                "sort_by names column(s) that are not list columns and will be "
+                f"ignored: {unknown}. Custom sort applies to list columns only.")
 
     out = {}
     fallback_cols = []
@@ -39,7 +79,20 @@ def compute_category_ordering(o_df, list_columns):
         if col not in o_df.columns:
             continue
         names = _distinct_node_names(o_df[col])
-        layout = compute_node_layout(names) if names else None
+        if not names:
+            continue
+
+        override = _resolve_override(sort_overrides, col)
+        if override is not None:
+            try:
+                out[col] = {"order": _apply_override(override, names)}
+                continue
+            except Exception as exc:  # noqa: BLE001 - fall back, never abort load
+                warnings.warn(
+                    f"sort_by override for column '{col}' raised {exc!r}; "
+                    "falling back to the default ordering heuristic.")
+
+        layout = compute_node_layout(names)
         if layout is not None:
             out[col] = layout
         else:
