@@ -2,6 +2,8 @@ import * as d3 from "https://esm.sh/d3@7";
 import * as globals from "./guidepost/consts";
 
 import { JSModel } from "./guidepost/js_model";
+import { load_vis_data } from "./guidepost/vis_data_loader";
+import { show_loading } from "./guidepost/loading";
 import { Validator } from "./guidepost/validator";
 
 import { Heatmap } from "./guidepost/heatmap";
@@ -82,6 +84,16 @@ export default async () => {
                     .attr('font-size', '13pt')
                     .attr('font-weight', 'bold');
         
+        if(model.facets.length === 0){
+            // No rows reached the frontend (or none survived cleaning). Without
+            // this the widget shows only its header and dropdowns, silently.
+            vis_group.append('text')
+                .text('No records to display (0 rows decoded from the data payload).')
+                .attr('transform', `translate(${10},${40})`)
+                .attr('font-size', '11pt')
+                .attr('fill', '#a04040');
+        }
+
         for(let i in model.facets){
             let parent = vis_group.append('g')
                             .attr('class', 'faceted_view')
@@ -183,9 +195,8 @@ export default async () => {
 
     }
 
-    function reload_vis(model, svg, validator, jsmodel){
+    function reload_vis(model, svg, validator, jsmodel, data){
             let vis_configs = JSON.parse(model.get("_vis_configs"));
-            let data = model.get("_vis_data");
             let _summary_stats = model.get("_summary_stats");
 
             svg.append('rect')
@@ -246,14 +257,33 @@ export default async () => {
             create_views(extra_state.jsmodel, extra_state.svg);
         })
 
-        model.on("change:_vis_data", ()=>{
-            // Data change must rebuild. Reuse the existing JSModel via
-            // update_data so views and configs persist; only fall through to
-            // a fresh reload if no model has been built yet.
+        // Data change must rebuild. Reuse the existing JSModel via update_data
+        // so views and configs persist; only fall through to a fresh reload if
+        // no model has been built yet. Large datasets arrive in chunks, so the
+        // load is async: `reload_gen` discards a load superseded by a newer one.
+        let reload_gen = 0;
+        const reload_data = async ()=>{
             if(!extra_state.jsmodel) return;
+            const gen = ++reload_gen;
+            // The old charts stay up until the new data arrives, so show the
+            // indicator above the svg in the same container.
+            const host = extra_state.svg.node().parentNode;
+            if(extra_state.loading) extra_state.loading.remove();  // e.g. a prior failure message
+            const loading = extra_state.loading = show_loading(host);
+            host.insertBefore(host.lastChild, host.firstChild);
+            let data;
+            try {
+                data = await load_vis_data(model, { on_progress: loading.update });
+            } catch(e){
+                console.error('Guidepost: could not load data from Python:', e);
+                if(gen !== reload_gen){ loading.remove(); return; }
+                loading.fail(`Could not load data from Python: ${e.message}`);
+                return;
+            }
+            loading.remove();
+            if(gen !== reload_gen) return;
             extra_state.svg.selectAll(".visualization_group").remove();
 
-            const data = model.get("_vis_data");
             const summary_stats = model.get("_summary_stats");
 
             // Swapping to a frame whose columns no longer satisfy the current
@@ -288,15 +318,35 @@ export default async () => {
                 model.set("_vis_configs", JSON.stringify(vis_configs));
                 model.save_changes();
             }
-        })
+        };
+        // A data swap changes `_vis_data` (inline) and/or `_vis_transfer`
+        // (chunked), often in the same sync; coalesce into a single reload.
+        let reload_queued = false;
+        const queue_reload = ()=>{
+            if(reload_queued) return;
+            reload_queued = true;
+            queueMicrotask(()=>{ reload_queued = false; reload_data(); });
+        };
+        model.on("change:_vis_data", queue_reload);
+        model.on("change:_vis_transfer", queue_reload);
 
         return () => {
         // Optional: Called when the widget is destroyed.
         }
     },
-    render({ model, el }) {
+    async render({ model, el }) {
         // Render the widget's view into the el HTMLElement.
-        let data = model.get("_vis_data");
+        // Inline for small datasets; pulled from Python in chunks for large ones.
+        const loading = show_loading(el);
+        let data;
+        try {
+            data = await load_vis_data(model, { on_progress: loading.update });
+        } catch(e){
+            console.error('Guidepost: could not load data from Python:', e);
+            loading.fail(`Could not load data from Python: ${e.message}`);
+            return;
+        }
+        loading.remove();
         let _summary_stats = model.get("_summary_stats");
         let vis_configs = JSON.parse(model.get("_vis_configs"));
 
@@ -350,7 +400,7 @@ export default async () => {
             // the same instance to reload_vis. The prior code instantiated
             // here AND inside reload_vis, doubling the cost of first load.
             jsmodel = new JSModel(data, vis_configs, _summary_stats, model);
-            reload_vis(model, extra_state.svg, extra_state.validator, jsmodel);
+            reload_vis(model, extra_state.svg, extra_state.validator, jsmodel, data);
         }
 
         create_config_interface(model, jsmodel, extra_state.svg);

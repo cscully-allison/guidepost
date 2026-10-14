@@ -707,6 +707,24 @@ describe('JSModel — interaction state', () => {
             }
         });
 
+        it('decodes Arrow payloads whose buffers come from another JS realm', async () => {
+            // Notebook frontends (e.g. VS Code) can hand over buffers created in
+            // a different realm, where `instanceof Uint8Array/ArrayBuffer` is false.
+            const vm = require('vm');
+            const fixture = makeFixture(8);
+            const ipc = await makeArrowPayload(fixture);
+            const foreign = vm.runInNewContext('(b) => new Uint8Array(b)')(Array.from(ipc));
+            assert.ok(!(foreign instanceof Uint8Array), 'precondition: cross-realm view');
+            const ForeignDataView = vm.runInNewContext('DataView');
+            for(const payload of [foreign,
+                                  new ForeignDataView(foreign.buffer),
+                                  foreign.buffer]){
+                const m = new JSModel(payload, VARS, {}, makeAnywidgetStub());
+                assert.deepStrictEqual(m.facets.sort(), ['A','B']);
+                assert.strictEqual(m.list_major_data.length, 16);
+            }
+        });
+
         it('still detects a change when this.vars has been mutated in place first', () => {
             // ConfigurationInterface.createDropdown does:
             //   let vis_configs = self.model.vars

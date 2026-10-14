@@ -1,5 +1,6 @@
 import * as d3 from "d3";
 import { tableFromIPC, Type } from "apache-arrow";
+import { as_bytes } from "./binary.js";
 import { num_rows, num_cols, VALID_CONFIG_FIELDS, MAX_FACETS, MAX_CATEGORICAL_COLUMNS, RENDER_NODE_BUDGET, CHUNK_TARGET_COLS } from "./consts.js";
 
 const MISSING_LABEL = "(missing)";
@@ -369,6 +370,12 @@ class JSModel{
             if(keys.length === 0) return [];
             return this.list_major(data);
         }
+        // Unrecognized transport shape. Previously this fell through to an
+        // empty record list with no error, which renders as a chart-less
+        // widget. Say what we received so the cause is diagnosable.
+        console.warn('Guidepost: _vis_data has an unrecognized type; no records decoded.',
+            { typeof: typeof data, tag: Object.prototype.toString.call(data),
+              ctor: data && data.constructor && data.constructor.name });
         return [];
     }
 
@@ -377,10 +384,19 @@ class JSModel{
      * trait surface) rather than the legacy dict-of-dicts.
      */
     _is_arrow_payload(data){
-        return data instanceof DataView
-            || data instanceof ArrayBuffer
-            || (typeof Uint8Array !== 'undefined' && data instanceof Uint8Array)
+        return this._as_bytes(data) !== null
             || (typeof data === 'string' && data.length > 0 && this._looks_base64(data));
+    }
+
+    /**
+     * Returns a Uint8Array view over a binary payload, or null if `data` is
+     * not binary. Identifies buffers by their tag / ArrayBuffer.isView rather
+     * than `instanceof`: notebook frontends (e.g. VS Code) can deliver
+     * buffers created in a different JS realm (another iframe or context),
+     * for which `instanceof ArrayBuffer/DataView/Uint8Array` is false.
+     */
+    _as_bytes(data){
+        return as_bytes(data);
     }
 
     _looks_base64(s){
@@ -403,11 +419,10 @@ class JSModel{
     _records_from_arrow(bytes){
         // Normalize to a Uint8Array so apache-arrow's `tableFromIPC` accepts it
         // regardless of how anywidget surfaced the Bytes trait.
-        let buf;
-        if(bytes instanceof Uint8Array) buf = bytes;
-        else if(bytes instanceof ArrayBuffer) buf = new Uint8Array(bytes);
-        else if(bytes instanceof DataView) buf = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        else if(typeof bytes === 'string'){
+        let buf = this._as_bytes(bytes);
+        if(buf){
+            // already normalized
+        } else if(typeof bytes === 'string'){
             const bin = atob(bytes);
             buf = new Uint8Array(bin.length);
             for(let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);

@@ -33,6 +33,18 @@ class Guidepost(anywidget.AnyWidget):
     # same data ~5× smaller and skips the o_df.astype(object).where() cast
     # that dominated load_data for >100k rows.
     _vis_data = traitlets.Bytes(b'').tag(sync=True)
+    # Large payloads (hundreds of MB for ~400k rows) exceed what notebook
+    # frontends such as VS Code reliably accept as a single comm message — the
+    # frontend then receives an empty buffer and draws no charts. Payloads above
+    # `_INLINE_MAX_BYTES` therefore skip the `_vis_data` trait entirely and are
+    # pulled by the frontend in `_CHUNK_BYTES` pieces via `request_vis_data`.
+    # `_vis_transfer` describes the pending transfer ("{}" = inline in _vis_data).
+    _vis_transfer = traitlets.Unicode("{}").tag(sync=True)
+    _INLINE_MAX_BYTES = 8 * 1024 * 1024
+    _CHUNK_BYTES = 4 * 1024 * 1024
+    # Full Arrow IPC bytes of the loaded frame, regardless of transport mode.
+    _vis_bytes = b''
+    _vis_transfer_id = 0
 
     vis_configs = None
     _vis_configs = traitlets.Unicode("{}").tag(sync=True)
@@ -133,11 +145,45 @@ class Guidepost(anywidget.AnyWidget):
 
     @property
     def records(self):
-        return self._vis_data
+        return self._vis_bytes
 
     @records.setter
     def records(self, df):
-        self._vis_data = self.load_data(df)
+        self.load_data(df)
+
+    def _publish_vis_data(self, payload):
+        """Expose Arrow bytes to the frontend, inline if small, else chunked."""
+        self._vis_bytes = payload
+        self._vis_transfer_id += 1
+        size = len(payload)
+        with self.hold_sync():
+            if size <= self._INLINE_MAX_BYTES:
+                self._vis_data = payload
+                self._vis_transfer = "{}"
+            else:
+                self._vis_data = b''
+                self._vis_transfer = json.dumps({
+                    "id": self._vis_transfer_id,
+                    "size": size,
+                    "chunks": -(-size // self._CHUNK_BYTES),
+                })
+
+    def _send_vis_data_chunks(self, content):
+        """Reply to `request_vis_data` with the payload as binary chunks."""
+        if content.get("transfer_id") != self._vis_transfer_id or not self._vis_bytes:
+            raise RuntimeError("stale or unknown data transfer; reload the widget view")
+        view = memoryview(self._vis_bytes)
+        size = len(view)
+        total = -(-size // self._CHUNK_BYTES)
+        for index in range(total):
+            start = index * self._CHUNK_BYTES
+            self.send({
+                "type": "vis_data_chunk",
+                "request_id": content.get("request_id"),
+                "transfer_id": self._vis_transfer_id,
+                "index": index,
+                "total": total,
+            }, buffers=[view[start:start + self._CHUNK_BYTES]])
 
     def load_data(self, in_df):
         '''
@@ -239,7 +285,7 @@ class Guidepost(anywidget.AnyWidget):
         sink = pa.BufferOutputStream()
         with pa.ipc.new_stream(sink, table.schema) as writer:
             writer.write_table(table)
-        self._vis_data = sink.getvalue().to_pybytes()
+        payload = sink.getvalue().to_pybytes()
 
         # Register the cleaned frame with DuckDB so JS-originated aggregation
         # requests have a current source. Use the cleaned o_df (not in_cpy)
@@ -249,7 +295,11 @@ class Guidepost(anywidget.AnyWidget):
         else:
             self._agg_engine.replace(o_df)
 
-        return self._vis_data
+        # Publish last: all validation/summary work above has succeeded, and a
+        # large payload is announced to the frontend only once the engine above
+        # can answer its follow-up requests.
+        self._publish_vis_data(payload)
+        return payload
 
     def _detect_list_columns(self, df):
         '''
@@ -386,6 +436,8 @@ class Guidepost(anywidget.AnyWidget):
                     )
                 grid = self._handle_aggregation(content)
                 self.send({"type": "aggregation_result", "request_id": request_id, "grid": grid})
+            elif msg_type == "request_vis_data":
+                self._send_vis_data_chunks(content)
             elif msg_type == "request_brush_indices":
                 if self._agg_engine is None:
                     raise RuntimeError("Aggregation engine not initialized.")
